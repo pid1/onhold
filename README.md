@@ -88,6 +88,27 @@ Text that came from the person called is returned under
 | `get_call(call_id, include_transcript)` | The report; `retry_after_seconds` while it runs |
 | `list_calls(outcome, status, since, reference)` | Past and pending calls |
 | `delete_call(call_id, confirm)` | Delete a finished call and its report |
+| `get_menu_paths(to_number)` | Saved phone-menu paths for a number, each `works` or `stale` |
+| `delete_menu_paths(to_number, confirm, presses)` | Delete one saved path, or all of a number's |
+
+## Phone menus it remembers
+
+When a call gets through a phone menu to a person, onhold saves the keypad path
+for that number: `2 (registration), then 0 (a person)`. The path comes from the
+tones the agent actually pressed, as ElevenLabs records them, not from what
+anyone said. A press of five or more digits is never kept, because it could be
+an extension, an ID or an account number.
+
+Before writing a brief, Claude calls `get_menu_paths` and puts a working path
+in the brief's `menu_path`. The agent tries it first and goes back to listening
+if the menu has changed. A draft for a number with a saved path that the brief
+leaves out says so. The path is part of the brief, so the preview shows it like
+everything else the agent is given.
+
+A saved path that leads to a dead end, or that the agent had to leave to get
+through, is marked `stale` instead of being deleted, and the new path is saved
+beside it. Paths are facts about the office, never about you. Deleting a call
+keeps what it taught; `delete_menu_paths` removes paths.
 
 ## Set it up
 

@@ -24,6 +24,7 @@ PLACEHOLDERS = {
     "may_share": "1. The vehicle is a passenger car registered in this county.",
     "must_not_share": "1. Any account, licence or card number\n2. Any address",
     "give_up_when": "they need the owner in person or need an ID number",
+    "menu_path": "1. Press 2 (vehicle registration)\n2. Press 0 (speak to a person)",
     "callback_number": "512-555-0100",
     "assistant_number": "512-555-0100",
     "call_window": "none (call placed now)",

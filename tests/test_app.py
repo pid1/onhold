@@ -178,7 +178,11 @@ async def test_mcp_lists_the_tools_and_drafts_a_call(client, signing_key, api):
         "get_call",
         "list_calls",
         "delete_call",
+        "get_menu_paths",
+        "delete_menu_paths",
     }
+    assert tools["get_menu_paths"]["annotations"]["readOnlyHint"] is True
+    assert tools["delete_menu_paths"]["annotations"]["destructiveHint"] is True
     assert tools["place_call"]["annotations"]["destructiveHint"] is True
     assert tools["get_call"]["annotations"]["readOnlyHint"] is True
     r = await client.post(

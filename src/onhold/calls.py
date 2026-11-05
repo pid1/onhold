@@ -14,6 +14,13 @@ webhooks missed. ``get_call`` also refreshes an open call on demand.
 
 Everything that came from the person called (summary, answers, follow-ups,
 transcript) is returned under ``untrusted_external_content``.
+
+Phone-tree memory: when a call reaches a person, the keypad path the agent
+pressed on the way is saved for that number (``_learn_menu``). ``draft_call``
+points out a saved path, and a brief carries one only when its writer puts it
+in ``menu_path``, so the preview still shows everything the agent is given.
+A saved path that leads to a dead end, or that the agent had to leave, is
+marked stale rather than deleted on one bad call.
 """
 
 from __future__ import annotations
@@ -54,6 +61,8 @@ RECONCILE_AFTER = timedelta(minutes=20)
 GIVE_UP_AFTER = timedelta(hours=24)
 RETRY_AFTER_SECS = 60
 OPEN = ("scheduled", "dialing", "in_progress")
+# Outcomes where the agent got through to a person.
+REACHED = ("goal_met", "partial", "needs_owner")
 
 
 class CallError(ValueError):
@@ -150,7 +159,7 @@ class Service:
                 "preview_json": preview,
             }
         )
-        return {
+        result = {
             "draft_id": draft_id,
             "expires_at_utc": expires.isoformat(timespec="minutes"),
             "preview": preview,
@@ -160,6 +169,16 @@ class Service:
                 f"and expires in {self.settings.draft_ttl_secs // 60} minutes."
             ),
         }
+        if not b.menu_path:
+            saved = [r for r in await self.store.menu_paths(b.to_number) if _works(r)]
+            if saved:
+                result["menu_path_hint"] = (
+                    "This number has a saved phone-menu path. To have the agent try it, "
+                    "draft again with its menu_path in the brief; this draft has none."
+                )
+                result[UNTRUSTED_KEY] = {"saved_menu_paths": [menu_path_view(r) for r in saved]}
+                result["note"] = UNTRUSTED_NOTE
+        return result
 
     async def _claim(self, draft_id: str, confirm: bool) -> tuple[CallBrief, dict]:
         if confirm is not True:
@@ -343,6 +362,59 @@ class Service:
         )
         return {"calls": [summary_view(r) for r in rows], "note": UNTRUSTED_NOTE}
 
+    # Menu paths --------------------------------------------------------------
+
+    async def get_menu_paths(self, to_number: str) -> dict:
+        number = check_number(to_number, self.settings.allowed_country_codes)
+        rows = await self.store.menu_paths(number)
+        return {
+            "to_number": number,
+            UNTRUSTED_KEY: {"menu_paths": [menu_path_view(r) for r in rows]},
+            "note": (
+                "Put one path's menu_path in a brief to have the agent try it. "
+                "Prefer status works. " + UNTRUSTED_NOTE
+            ),
+        }
+
+    async def delete_menu_paths(self, to_number: str, presses: str | None, confirm: bool) -> dict:
+        if confirm is not True:
+            raise CallError("confirm must be true, and only after the owner asked to delete it")
+        number = check_number(to_number, self.settings.allowed_country_codes)
+        deleted = await self.store.delete_menu_paths(number, presses)
+        return {"to_number": number, "presses": presses, "deleted": deleted}
+
+    async def _learn_menu(self, call: dict, conv: dict, updated: dict) -> None:
+        """Save the path that reached a person; mark a planned one that did not work."""
+        steps = report.menu_presses(conv)
+        pressed = [s["press"] for s in steps] if steps is not None else None
+        planned = [s["press"] for s in (call.get("brief_json") or {}).get("menu_path") or []]
+        reached = updated.get("outcome") in REACHED
+        now = _ts(self._now())
+        if planned and (
+            updated.get("reason") == "phone_tree_dead_end"
+            or (reached and pressed is not None and pressed[: len(planned)] != planned)
+        ):
+            await self.store.menu_path_failed(call["to_number"], ",".join(planned), now)
+        if reached and steps:
+            await self.store.menu_path_worked(
+                call["to_number"], steps, call["topic"], call["id"], now
+            )
+
+    async def _finish(self, call: dict, conv: dict) -> dict:
+        """Apply a finished conversation's report, then learn its menu path."""
+        fields = report.from_conversation(
+            conv, self._questions(call), self.settings.max_duration_secs
+        )
+        if fields.get("conversation_id") is None:
+            fields.pop("conversation_id", None)
+        updated = await self._apply(call, fields)
+        try:
+            await self._learn_menu(call, conv, updated)
+        except Exception:
+            # The report is what matters; a path not learned costs one menu.
+            log.exception("menu path for %s not learned", call["id"])
+        return updated
+
     # Results -----------------------------------------------------------------
 
     async def _apply(self, call: dict, fields: dict) -> dict:
@@ -393,11 +465,9 @@ class Service:
         if call["status"] in ("ended", "cancelled"):
             return "ignored: already reported"
         if kind == "post_call_transcription":
-            fields = report.from_conversation(
-                data, self._questions(call), self.settings.max_duration_secs
-            )
-        else:
-            fields = report.from_failure(data)
+            await self._finish(call, data)
+            return f"recorded {call['id']}"
+        fields = report.from_failure(data)
         if fields.get("conversation_id") is None:
             fields.pop("conversation_id", None)
         await self._apply(call, fields)
@@ -431,10 +501,7 @@ class Service:
         conv = await self.client.get_conversation(conv_id)
         status = conv.get("status")
         if status == "done":
-            fields = report.from_conversation(
-                conv, self._questions(call), self.settings.max_duration_secs
-            )
-            return await self._apply(call, fields)
+            return await self._finish(call, conv)
         if status == "failed":
             return await self._apply(call, report.from_failure({"conversation_id": conv_id}))
         if status in ("in-progress", "processing") and call["status"] != "in_progress":
@@ -496,6 +563,24 @@ def summary_view(call: dict) -> dict:
     if call.get("follow_ups_json"):
         out["follow_ups"] = len(call["follow_ups_json"])
     return out
+
+
+def _works(row: dict) -> bool:
+    return (row["last_worked_at"] or 0) > (row["last_failed_at"] or 0)
+
+
+def menu_path_view(row: dict) -> dict:
+    """A saved path, with ``menu_path`` ready to put in a brief."""
+    return {
+        "presses": row["digits"],
+        "menu_path": row["steps_json"],
+        "status": "works" if _works(row) else "stale",
+        "worked": row["worked_count"],
+        "failed": row["failed_count"],
+        "last_worked_utc": _iso(row["last_worked_at"]),
+        "last_failed_utc": _iso(row["last_failed_at"]),
+        "last_topic": row["topic"],
+    }
 
 
 def view(call: dict, include_transcript: bool = False) -> dict:
