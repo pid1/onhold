@@ -53,13 +53,13 @@ below that needs one reads it from the environment.
 
 ```bash
 npx wrangler login
-npx wrangler d1 create onhold          # put the database_id it prints in wrangler.jsonc
+npx wrangler d1 create onhold
 npx wrangler d1 migrations apply onhold --remote
 ```
 
-In `wrangler.jsonc`, uncomment `routes` and set your hostname, for example
-`onhold.example.com/*` on zone `example.com`. Add a proxied DNS record for that
-hostname (an `AAAA` record to `100::` is the usual placeholder).
+In `wrangler.jsonc`, put the `database_id` it printed in `d1_databases` and
+your own hostname in `routes`, on a zone in your Cloudflare account. It is a
+custom domain, so the deploy creates the DNS record and certificate.
 
 Set the secrets. Each command prompts for its value:
 

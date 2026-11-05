@@ -5,8 +5,8 @@ An ElevenLabs voice agent makes one call for you, says plainly that it is an AI
 calling on your behalf, asks your questions, and writes down the answers. When
 the call ends you get a report, and Claude can read it.
 
-It runs on Cloudflare's free tier: one Python Worker, a D1 database and two
-cron triggers. You bring an ElevenLabs account and a Twilio number.
+It runs on Cloudflare's free tier: one Python Worker, a D1 database and one
+cron trigger. You bring an ElevenLabs account and a Twilio number.
 
 ## What a call looks like
 

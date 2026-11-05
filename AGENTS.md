@@ -19,7 +19,7 @@ These are the project's point, not style. A change that weakens one needs the ow
 - `src/onhold/brief.py` validates a brief (numbers, TCPA hours, no SSNs, long digit runs or street addresses) and turns it into the voice agent's dynamic variables, including `onhold_call_id`, which every webhook carries back.
 - `src/onhold/calls.py` is the `Service` every tool, webhook and cron goes through. `src/onhold/report.py` turns an ElevenLabs conversation into the report row and cross-checks the agent's outcome.
 - `src/onhold/store.py` runs the same SQL on D1 (`D1Store`) and SQLite (`SqliteStore`, tests and non-Cloudflare). The schema is `migrations/*.sql`; a new migration is a new numbered file, applied with `npx wrangler d1 migrations apply onhold`.
-- `src/onhold/app.py` is the ASGI app: `/mcp` (Access-checked, then `mcp_server.http_app`), `/webhooks/elevenlabs` (HMAC-checked) and `/healthz`. `src/entry.py` is the Worker entry point and the two crons.
+- `src/onhold/app.py` is the ASGI app: `/mcp` (Access-checked, then `mcp_server.http_app`), `/webhooks/elevenlabs` (HMAC-checked) and `/healthz`. `src/entry.py` is the Worker entry point and the 15-minute cron (reconcile, then purge).
 - `src/onhold/agent/` is the voice agent as code. `scripts/setup.py` pushes it to ElevenLabs. The data collection `outcome` and `not_reached_reason` enums must match `report.OUTCOMES` and `report.REASONS`; a test checks.
 
 ## Sadr

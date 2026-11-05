@@ -1,4 +1,4 @@
-"""Cloudflare Workers entrypoint: the web app, plus the two cron jobs."""
+"""Cloudflare Workers entrypoint: the web app, plus the cron job."""
 
 import logging
 
@@ -8,20 +8,14 @@ from onhold.app import asgi_app, build_service
 
 log = logging.getLogger("onhold")
 
-# wrangler.jsonc's triggers.crons, in the same order.
-RECONCILE = "*/15 * * * *"
-PURGE = "0 9 * * *"
-
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
         return await asgi.fetch(asgi_app, request, self.env, self.ctx)
 
     async def scheduled(self, controller, *_):
+        """Every 15 minutes (wrangler.jsonc): reconcile, then purge. Both are cheap."""
         service = build_service(self.env)
-        cron = getattr(controller, "cron", "")
-        if cron == PURGE:
-            result = await service.purge()
-        else:
-            result = await service.reconcile()
-        log.warning("cron %s: %s", cron, result)
+        reconciled = await service.reconcile()
+        purged = await service.purge()
+        log.warning("cron: reconciled %s, purged %s", reconciled, purged)
