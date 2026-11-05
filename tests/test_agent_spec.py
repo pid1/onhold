@@ -124,6 +124,63 @@ def test_setup_dry_run_reads_but_writes_nothing(capsys):
     assert "AGENT_ID=agent_live" in out
 
 
+class LiveWithMcp(Recorder):
+    """A live agent with the owner's own MCP server attached; accepts the PATCH."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/convai/agents/agent_live":
+            if request.method == "PATCH":
+                self.requests.append(request)
+                return httpx.Response(200, json={})
+            self.requests.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "conversation_config": {"agent": {"prompt": {"mcp_server_ids": ["mcp_cal"]}}}
+                },
+            )
+        return super().__call__(request)
+
+    def patched_mcp_ids(self) -> list[str]:
+        [patch] = [r for r in self.requests if r.method == "PATCH"]
+        return json.loads(patch.content)["conversation_config"]["agent"]["prompt"]["mcp_server_ids"]
+
+
+def run_setup(rec: Recorder, *args: str) -> int:
+    http = httpx.Client(base_url="https://api.elevenlabs.io", transport=httpx.MockTransport(rec))
+    return setup.main(["agent", "--owner-name", "Test Owner", "--apply", *args], http=http)
+
+
+def test_setup_keeps_the_live_agents_mcp_servers(capsys):
+    rec = LiveWithMcp()
+    assert run_setup(rec) == 0
+    assert rec.patched_mcp_ids() == ["mcp_cal"]
+    assert "Keeping MCP servers attached: mcp_cal." in capsys.readouterr().out
+
+
+def test_setup_mcp_server_id_replaces_them(capsys):
+    rec = LiveWithMcp()
+    assert run_setup(rec, "--mcp-server-id", "mcp_a", "--mcp-server-id", "mcp_b") == 0
+    assert rec.patched_mcp_ids() == ["mcp_a", "mcp_b"]
+    assert "MCP servers: mcp_cal -> mcp_a, mcp_b." in capsys.readouterr().out
+
+
+def test_setup_no_mcp_servers_detaches_them():
+    rec = LiveWithMcp()
+    assert run_setup(rec, "--no-mcp-servers") == 0
+    assert rec.patched_mcp_ids() == []
+
+
+def test_setup_mcp_flags_are_exclusive():
+    with pytest.raises(SystemExit):
+        setup.main(["agent", "--owner-name", "X", "--no-mcp-servers", "--mcp-server-id", "m"])
+
+
+def test_the_body_carries_given_mcp_servers():
+    body = agent_spec.build_agent_body(owner_name="X", mcp_server_ids=["mcp_cal"])
+    assert body["conversation_config"]["agent"]["prompt"]["mcp_server_ids"] == ["mcp_cal"]
+
+
 def test_setup_needs_an_owner_name(monkeypatch):
     monkeypatch.delenv("OWNER_NAME", raising=False)
     http = httpx.Client(

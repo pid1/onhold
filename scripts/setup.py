@@ -10,6 +10,8 @@ key redacted) but not sent. Nothing changes in ElevenLabs without --apply.
 The agent is found by --agent-id, else by its name in agent.json. Pronunciation
 rules for names the voice gets wrong live in a local file you pass with
 --pronunciation-rules (a JSON list of alias rules); they are never committed.
+MCP servers attached to the live agent (the owner's own, such as a free/busy
+calendar) are kept; --mcp-server-id sets them and --no-mcp-servers detaches them.
 
 Afterwards, set AGENT_ID, PHONE_NUMBER_ID, ASSISTANT_NUMBER and OWNER_NAME as
 Worker secrets (docs/deploy.md).
@@ -155,12 +157,16 @@ class Setup:
         voice_id: str | None,
         rules: list[dict],
         webhook_id: str | None = None,
+        mcp_server_ids: list[str] | None = None,
     ) -> str | None:
+        """``mcp_server_ids`` None keeps the MCP servers attached to the live agent
+        (the owner's own, such as a free/busy calendar); a list replaces them."""
         body = agent_spec.build_agent_body(
             owner_name=owner_name,
             voice_id=self.voice(voice_id),
             pronunciation_locators=self.pronunciation(rules),
             webhook_id=webhook_id,
+            mcp_server_ids=mcp_server_ids,
         )
         existing = agent_id
         if not existing and self.http is not None:
@@ -175,6 +181,19 @@ class Setup:
             self.say(f"Updating agent {existing} to match src/onhold/agent/.")
             if self.http is not None:
                 live = self.get(f"/v1/convai/agents/{safe_id(existing)}")
+                live_prompt = ((live.get("conversation_config") or {}).get("agent") or {}).get(
+                    "prompt"
+                ) or {}
+                attached = list(live_prompt.get("mcp_server_ids") or [])
+                if mcp_server_ids is None:
+                    body["conversation_config"]["agent"]["prompt"]["mcp_server_ids"] = attached
+                    if attached:
+                        self.say(f"Keeping MCP servers attached: {', '.join(attached)}.")
+                elif sorted(mcp_server_ids) != sorted(attached):
+                    self.say(
+                        f"MCP servers: {', '.join(attached) or 'none'} -> "
+                        f"{', '.join(mcp_server_ids) or 'none'}."
+                    )
                 changes = []
                 for label in ("tts", "agent.prompt"):
                     want, have = body["conversation_config"], live.get("conversation_config") or {}
@@ -233,6 +252,20 @@ def main(argv: list[str] | None = None, *, http: httpx.Client | None = None) -> 
     p.add_argument("--pronunciation-rules", type=Path, help="local JSON list of alias rules")
     p.add_argument("--phone-number-id")
     p.add_argument("--webhook-id", help="the ElevenLabs webhook pointing at /webhooks/elevenlabs")
+    mcp = p.add_mutually_exclusive_group()
+    mcp.add_argument(
+        "--mcp-server-id",
+        action="append",
+        dest="mcp_server_ids",
+        help="attach exactly these MCP servers (repeatable); default: keep the live agent's",
+    )
+    mcp.add_argument(
+        "--no-mcp-servers",
+        action="store_const",
+        const=[],
+        dest="mcp_server_ids",
+        help="detach every MCP server from the agent",
+    )
     args = p.parse_args(argv)
 
     key = os.environ.get("ELEVENLABS_API_KEY")
@@ -259,6 +292,7 @@ def main(argv: list[str] | None = None, *, http: httpx.Client | None = None) -> 
             voice_id=args.voice_id,
             rules=rules,
             webhook_id=args.webhook_id,
+            mcp_server_ids=args.mcp_server_ids,
         )
         if agent_id:
             s.say(f"\nAGENT_ID={agent_id}")

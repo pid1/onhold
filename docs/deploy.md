@@ -178,8 +178,9 @@ Set it up like this:
   Never give it any other tools.
 - **Attach it in ElevenLabs.** Add it as a custom MCP server (Streamable HTTP,
   `Authorization: Bearer <token>`) that allows only those three tools, and
-  attach it to the onhold agent. `scripts/setup.py` sends `mcp_server_ids: []`,
-  so re-running it detaches the server. Attach it again afterwards.
+  attach it to the onhold agent. Re-running `scripts/setup.py` keeps the MCP
+  servers already attached to the live agent. `--mcp-server-id ID` (repeatable)
+  sets them instead, and `--no-mcp-servers` detaches them all.
 - **Change the guardrails on purpose.** The agent's standing rules forbid
   sharing anyone's schedule and booking anything (`STANDING_DO_NOT_SHARE` in
   `brief.py`, and the Guardrails in `system_prompt.md`). Leave them as they
