@@ -1,7 +1,7 @@
 """Where drafts and call reports live: D1 on Cloudflare, SQLite anywhere else.
 
-Both stores run the same SQL (``migrations/0001_init.sql`` is the schema for
-each), so the tests exercise the queries the Worker runs. Only ``_run`` differs.
+Both stores run the same SQL (``migrations/*.sql`` is the schema for each), so
+the tests exercise the queries the Worker runs. Only ``_run`` differs.
 JSON columns are encoded and decoded here, so callers see plain dicts and lists.
 """
 
@@ -55,6 +55,7 @@ DRAFT_COLUMNS = (
     "call_id",
 )
 OPEN_STATUSES = ("scheduled", "dialing", "in_progress")
+MENU_PATH_LIMIT = 10
 
 
 def _encode(row: dict) -> dict:
@@ -182,6 +183,50 @@ class Store:
         )
         return [_decode(r) for r in rows]
 
+    # Menu paths ------------------------------------------------------------
+
+    async def menu_path_worked(
+        self, to_number: str, steps: list[dict], topic: str, call_id: str, now: int
+    ) -> None:
+        """Record that this path reached a person, adding it if it is new."""
+        digits = ",".join(s["press"] for s in steps)
+        await self._run(
+            "INSERT INTO menu_paths (to_number, digits, steps_json, topic, created_at, "
+            "updated_at, worked_count, last_worked_at, last_call_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?) "
+            "ON CONFLICT (to_number, digits) DO UPDATE SET "
+            "steps_json = excluded.steps_json, topic = excluded.topic, "
+            "updated_at = excluded.updated_at, worked_count = worked_count + 1, "
+            "last_worked_at = excluded.last_worked_at, last_call_id = excluded.last_call_id",
+            [to_number, digits, json.dumps(steps), topic, now, now, now, call_id],
+        )
+
+    async def menu_path_failed(self, to_number: str, digits: str, now: int) -> bool:
+        """Mark a saved path as having failed. False if there is no such path."""
+        _, changes = await self._run(
+            "UPDATE menu_paths SET failed_count = failed_count + 1, last_failed_at = ?, "
+            "updated_at = ? WHERE to_number = ? AND digits = ?",
+            [now, now, to_number, digits],
+        )
+        return changes == 1
+
+    async def menu_paths(self, to_number: str) -> list[dict]:
+        rows, _ = await self._run(
+            "SELECT * FROM menu_paths WHERE to_number = ? "
+            "ORDER BY COALESCE(last_worked_at, 0) DESC, digits LIMIT ?",
+            [to_number, MENU_PATH_LIMIT],
+        )
+        return [_decode(r) for r in rows]
+
+    async def delete_menu_paths(self, to_number: str, digits: str | None = None) -> int:
+        if digits is None:
+            _, changes = await self._run("DELETE FROM menu_paths WHERE to_number = ?", [to_number])
+        else:
+            _, changes = await self._run(
+                "DELETE FROM menu_paths WHERE to_number = ? AND digits = ?", [to_number, digits]
+            )
+        return changes
+
     async def purge_transcripts(self, now: int) -> int:
         _, changes = await self._run(
             "UPDATE calls SET transcript_json = NULL, transcript_purge_at = NULL "
@@ -199,12 +244,25 @@ class SqliteStore(Store):
         self.conn.row_factory = sqlite3.Row
 
     def migrate(self) -> None:
-        have = {
-            r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
-        if "calls" not in have:
-            for f in sorted(MIGRATIONS.glob("*.sql")):
+        """Apply the migrations not yet applied, counted in ``PRAGMA user_version``.
+
+        A database made before the count existed (version 0, ``calls`` present)
+        has the first migration already.
+        """
+        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if (
+            version == 0
+            and self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='calls'"
+            ).fetchone()
+        ):
+            version = 1
+        files = sorted(MIGRATIONS.glob("*.sql"))
+        for i, f in enumerate(files, 1):
+            if i > version:
                 self.conn.executescript(f.read_text())
+        self.conn.execute(f"PRAGMA user_version = {len(files)}")
+        self.conn.commit()
 
     async def _run(self, sql: str, params: list[Any]) -> tuple[list[dict], int]:
         cur = self.conn.execute(sql, params)

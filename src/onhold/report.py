@@ -18,6 +18,8 @@ Every adjustment is recorded in ``details.checks`` so the report says why.
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 OUTCOMES = ("goal_met", "partial", "needs_owner", "not_reached")
@@ -42,6 +44,14 @@ DETAIL_FIELDS = (
     "do_not_call_requested",
     "info_requested_not_available",
 )
+KEYPAD_TOOL = "play_keypad_touch_tone"
+# One menu choice: 1-4 of 0-9 * #, after dropping ElevenLabs' w/W pauses. Anything
+# longer could be an extension, an ID or an account number, and is never kept.
+PRESS = re.compile(r"^[0-9*#]{1,4}$")
+MAX_MENU_STEPS = 10
+MAX_OPTION_CHARS = 80
+# What an option note may not carry: any run of 5 or more digits.
+OPTION_DIGITS = re.compile(r"(?:\d[ -]?){5,}")
 # Twilio's failure reasons as ElevenLabs relays them.
 FAILURE_REASONS = {"busy": "busy", "no-answer": "no_answer", "no_answer": "no_answer"}
 
@@ -143,6 +153,48 @@ def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) 
         "cost": meta.get("cost"),
         "transcript_json": transcript,
     }
+
+
+def _option(reason: Any) -> str:
+    text = " ".join(str(reason or "").split())[:MAX_OPTION_CHARS].strip()
+    return "" if OPTION_DIGITS.search(text) else text
+
+
+def menu_presses(conv: dict) -> list[dict] | None:
+    """The keypad presses the agent made, in order: ``[{"press", "option"}]``.
+
+    Read from the transcript's tool calls, the record of what was actually
+    pressed, not from anything the agent or the callee said. ``option`` is the
+    agent's own reason for the press. A press that failed is left out. Returns
+    None when the presses cannot be a menu path (too many, or one too long to be
+    a menu choice), so nothing is learned from that call.
+    """
+    turns = conv.get("transcript") or []
+    failed = {
+        r.get("request_id")
+        for t in turns
+        for r in t.get("tool_results") or []
+        if r.get("tool_name") == KEYPAD_TOOL and r.get("is_error")
+    }
+    steps = []
+    for t in turns:
+        for c in t.get("tool_calls") or []:
+            if c.get("tool_name") != KEYPAD_TOOL or c.get("tool_has_been_called") is False:
+                continue
+            if c.get("request_id") in failed:
+                continue
+            params = c.get("params_as_json")
+            try:
+                params = json.loads(params) if isinstance(params, str) else (params or {})
+            except ValueError:
+                return None
+            tones = re.sub(r"[wW]", "", str(params.get("dtmf_tones") or ""))
+            if not PRESS.match(tones):
+                return None
+            steps.append({"press": tones, "option": _option(params.get("reason"))})
+    if len(steps) > MAX_MENU_STEPS:
+        return None
+    return steps
 
 
 def from_failure(data: dict) -> dict:

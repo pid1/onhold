@@ -209,6 +209,23 @@ class CallWindow(BaseModel):
         return start <= now <= end - MIN_WINDOW_LEFT
 
 
+class MenuStep(BaseModel):
+    """One keypad press on the way through a phone menu."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    press: Annotated[
+        str,
+        StringConstraints(pattern=r"^[0-9*#]{1,4}$"),
+        Field(description="Keypad digits for this menu, e.g. '2' (1-4 of 0-9, * and #)"),
+    ]
+    option: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, max_length=80),
+        Field(description="What the press is for, e.g. 'billing'"),
+    ] = ""
+
+
 class CallBrief(BaseModel):
     """What the owner's agent writes before any call. Every field is shown to the voice agent."""
 
@@ -246,6 +263,15 @@ class CallBrief(BaseModel):
             "owner in person or need ID'"
         ),
     ]
+    menu_path: Annotated[
+        list[MenuStep],
+        Field(
+            max_length=10,
+            description="A phone-menu path that worked before for this number, from "
+            "get_menu_paths, in order. The agent tries it first and falls back to "
+            "listening if the menu has changed. Leave empty for a number with no saved path.",
+        ),
+    ] = []
     callback_number: Annotated[
         str | None,
         Field(
@@ -290,12 +316,25 @@ class CallBrief(BaseModel):
         for name in ("questions", "may_share", "must_not_share"):
             for i, item in enumerate(getattr(self, name)):
                 _check_text(f"{name}[{i}]", item)
+        for i, step in enumerate(self.menu_path):
+            _check_text(f"menu_path[{i}].option", step.option)
 
 
 def _numbered(items: list[str] | tuple[str, ...], empty: str) -> str:
     if not items:
         return empty
     return "\n".join(f"{i}. {item}" for i, item in enumerate(items, 1))
+
+
+NO_MENU_PATH = "(none saved; listen to the menu)"
+
+
+def menu_path_text(steps: list[MenuStep]) -> str:
+    """1. Press 2 (billing)"""
+    return _numbered(
+        [f"Press {s.press}" + (f" ({s.option})" if s.option else "") for s in steps],
+        NO_MENU_PATH,
+    )
 
 
 def to_dynamic_variables(
@@ -325,6 +364,7 @@ def to_dynamic_variables(
             [*STANDING_DO_NOT_SHARE, *brief.must_not_share], "(standing list only)"
         ),
         "give_up_when": brief.give_up_when,
+        "menu_path": menu_path_text(brief.menu_path),
         "callback_number": speakable_number(
             brief.callback_number or default_callback or assistant_number
         ),
