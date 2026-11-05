@@ -31,7 +31,7 @@ These are the project's point, not style. A change that weakens one needs the ow
 Don't auto-merge.
 
 ### Build and test
-- Install with `uv sync`. Run `uv run pytest` (124 tests on 2026-11-05, about a second). No test touches the network: ElevenLabs, Pushover and Cloudflare Access keys are faked in `tests/conftest.py`.
+- Install with `uv sync`. Run `uv run pytest` (129 tests on 2026-11-05, about a second). No test touches the network: ElevenLabs, Pushover and Cloudflare Access keys are faked in `tests/conftest.py`.
 - Check style with `uv run ruff check .` and `uv run ruff format --check .`. CI runs these three commands.
 - `uv run pywrangler dev` runs the Worker in workerd against a local D1 (apply the schema first with `npx wrangler d1 migrations apply onhold --local`). Pass settings with `--var NAME:value`; `GET /healthz` answers 200 once the required ones are set. Scheduled handlers can be triggered through the local explorer API that wrangler prints.
 - Never run `scripts/setup.py --apply`, `scripts/safety_tests.py --apply`, `pywrangler deploy` or `wrangler d1 ... --remote` for verification. They write to ElevenLabs or Cloudflare, and placing a call is a real phone call.

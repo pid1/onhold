@@ -141,9 +141,11 @@ def build_agent_body(
     voice_id: str | None = None,
     pronunciation_locators: list[dict] | None = None,
     webhook_id: str | None = None,
+    mcp_server_ids: list[str] | None = None,
 ) -> dict:
     """``voice_id`` replaces agent.json's when the library add returned a different id;
-    ``pronunciation_locators`` comes from setup's pronunciation dictionary step."""
+    ``pronunciation_locators`` comes from setup's pronunciation dictionary step;
+    ``mcp_server_ids`` are the owner's own MCP servers (none by default)."""
     spec = _strip_comments(load(agent_dir))
     prompt = system_prompt(agent_dir)
     placeholders = {"owner_name": owner_name, **PLACEHOLDERS}
@@ -160,7 +162,7 @@ def build_agent_body(
                     "prompt": prompt,
                     **llm_config(spec["llm"]),
                     "tool_ids": [],
-                    "mcp_server_ids": [],
+                    "mcp_server_ids": list(mcp_server_ids or []),
                     "built_in_tools": built_in_tools(spec["tools"]),
                 },
             },
