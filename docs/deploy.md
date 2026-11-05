@@ -152,6 +152,37 @@ claude mcp add --transport http onhold https://onhold.example.com/mcp
    into evaluation prompts. If it flags something that was on the list, the
    assumption is wrong; `owner_facts_shared` still shows what was said.
 
+## Optional: let the agent see when you're free
+
+onhold never reads a calendar, and nothing in this repository connects to one.
+If you want the voice agent to answer "when is a good time?" on a call, you can
+give *your* agent that ability in ElevenLabs. That's agent configuration you
+own, not an onhold feature, so think it through first:
+
+- **Expose free/busy only.** Use a source that can hand out a read-only,
+  free/busy-only view: times with no titles, places or attendees. One example
+  is a per-connection MCP endpoint with its own token. Never attach a
+  connector with full calendar access. Whatever the tool returns can be said
+  aloud to whoever answers.
+- **Lock it down.** Use a bearer token made for this one agent, and allow only
+  ElevenLabs' outbound addresses. For US workspaces those are `34.67.146.145`
+  and `34.59.11.47` ([source](https://elevenlabs.io/docs/eleven-api/resources/ip-allowlisting));
+  check the page for your region.
+- **Attach it in ElevenLabs.** Add it as a custom MCP server under *Agents >
+  Tools*, with an approval mode that allows only the free/busy tool, and attach
+  it to the onhold agent. `scripts/setup.py` sends `mcp_server_ids: []`, so
+  re-running it detaches the tool. Attach it again afterwards.
+- **Change the guardrail on purpose.** The agent's standing rules forbid
+  sharing anyone's schedule or whereabouts (`STANDING_DO_NOT_SHARE` in
+  `brief.py` and the Guardrails in `system_prompt.md`). With those unchanged,
+  the agent will refuse to read the tool's answer out. If you want it to offer
+  times, say so in a brief's `may_share` ("Free times this week from the
+  availability tool"), and expect the sensitive-information check to look
+  closely at that call.
+
+Everyone else in the household stays out of it either way: the tool should
+only ever see the owner's own free/busy.
+
 ## Pausing
 
 Set `"PAUSED": "true"` under `vars` in `wrangler.jsonc` and redeploy. Every `place_call` and `schedule_call` is then refused.
