@@ -1,0 +1,22 @@
+# Copy to .dev.vars for `wrangler dev`, and set each with
+# `npx wrangler secret put NAME` for the deployed Worker. Never commit values.
+
+ELEVENLABS_API_KEY=
+# The secret ElevenLabs shows when you create the post-call webhook.
+ELEVENLABS_WEBHOOK_SECRET=
+AGENT_ID=
+PHONE_NUMBER_ID=
+# The Twilio number the agent calls from, E.164.
+ASSISTANT_NUMBER=
+# Who the agent says it is calling on behalf of.
+OWNER_NAME=
+# Optional. The number the agent gives for callbacks; defaults to ASSISTANT_NUMBER.
+CALLBACK_NUMBER=
+# Optional. Pushover, for a message when each call ends.
+PUSHOVER_TOKEN=
+PUSHOVER_USER=
+# Cloudflare Access for /mcp: the team domain and the application's AUD tag.
+ACCESS_TEAM_DOMAIN=
+ACCESS_AUD=
+# Optional. The only Access identity allowed to use /mcp.
+OWNER_EMAIL=

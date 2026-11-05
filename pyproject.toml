@@ -1,0 +1,48 @@
+[project]
+name = "onhold"
+version = "0.1.0"
+description = "A phone assistant that sits on hold so you don't: an ElevenLabs voice agent you brief from Claude, on Cloudflare's free tier."
+readme = "README.md"
+license = "MIT"
+# 3.14 is the newest Python Workers runtime.
+requires-python = ">=3.14"
+# Everything here is vendored into the Worker bundle, so keep it to what the
+# Worker imports at runtime.
+dependencies = [
+    "cryptography>=46",
+    "httpx>=0.28",
+    "mcp>=2.3",
+    "pydantic>=2.12",
+    "starlette>=0.48",
+    "tzdata>=2025.2",
+]
+
+[dependency-groups]
+dev = [
+    # Tests only: they sign Access tokens to check access.py against.
+    "pyjwt>=2.10",
+    "pytest>=8.4",
+    "ruff>=0.14",
+    "uvicorn>=0.38",
+    "workers-py>=1.17.8",
+    "workers-runtime-sdk>=1.9.4",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106"]
+"scripts/**" = ["S603", "S607"]

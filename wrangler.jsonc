@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "onhold",
+  "main": "src/entry.py",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["python_workers"],
+
+  // Set your own hostname. A zone route needs a proxied DNS record for it.
+  // "routes": [{ "pattern": "onhold.example.com/*", "zone_name": "example.com" }],
+  "workers_dev": false,
+
+  // The agent's prompt, first message and config are read at runtime.
+  "rules": [
+    { "type": "Data", "globs": ["**/*.md", "**/*.txt", "**/*.json"], "fallthrough": true }
+  ],
+
+  "d1_databases": [
+    // Replace database_id with yours: npx wrangler d1 create onhold
+    { "binding": "DB", "database_name": "onhold", "database_id": "REPLACE_ME", "migrations_dir": "migrations" }
+  ],
+
+  // Reconcile calls the webhooks missed every 15 minutes; purge old
+  // transcripts and drafts once a day. src/entry.py matches these strings.
+  "triggers": { "crons": ["*/15 * * * *", "0 9 * * *"] },
+
+  // Secrets are set with `npx wrangler secret put NAME`; see the env example file.
+  "vars": { "PAUSED": "false", "ALLOWED_COUNTRY_CODES": "1" },
+
+  "observability": { "enabled": true }
+}
