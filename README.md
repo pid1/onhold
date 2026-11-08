@@ -137,6 +137,7 @@ month at Twilio. See [docs/RESEARCH.md](docs/RESEARCH.md) for the sources.
 
 ```bash
 uv sync
+npm ci                   # the pinned wrangler, for pywrangler and npx wrangler
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
 uv run pywrangler dev    # the Worker, locally, with a local D1

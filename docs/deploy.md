@@ -8,7 +8,9 @@ About an hour, once. You need:
   account;
 - a **Cloudflare** account (the free plan is enough) with a domain on it and
   **Zero Trust** enabled;
-- [uv](https://docs.astral.sh/uv/) and Node.js (for `npx wrangler`).
+- [uv](https://docs.astral.sh/uv/) and Node.js (for `npx wrangler`). In the
+  checkout, run `uv sync` and `npm ci`: `npm ci` installs the wrangler that
+  `package-lock.json` pins, and `npx wrangler` and `pywrangler` use it.
 
 Keep secrets out of your shell history and out of the repository. Each command
 below that needs one reads it from the environment.
