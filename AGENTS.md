@@ -31,14 +31,17 @@ These are the project's point, not style. A change that weakens one needs the ow
 Don't auto-merge.
 
 ### Build and test
-- Install with `uv sync`. Run `uv run pytest` (129 tests on 2026-11-05, about a second). No test touches the network: ElevenLabs, Pushover and Cloudflare Access keys are faked in `tests/conftest.py`.
+- Install with `uv sync` and `npm ci`. Run `uv run pytest` (129 tests on 2026-11-08, about a second). No test touches the network: ElevenLabs, Pushover and Cloudflare Access keys are faked in `tests/conftest.py`.
 - Check style with `uv run ruff check .` and `uv run ruff format --check .`. CI runs these three commands.
-- `uv run pywrangler dev` runs the Worker in workerd against a local D1 (apply the schema first with `npx wrangler d1 migrations apply onhold --local`). Pass settings with `--var NAME:value`; `GET /healthz` answers 200 once the required ones are set. Scheduled handlers can be triggered through the local explorer API that wrangler prints.
+- `uv run pywrangler dev` runs the Worker in workerd against a local D1. Run `npm ci` and `npx wrangler d1 migrations apply onhold --local` first. Pass settings with `--var NAME:value`. `uv run pywrangler dev --port 8791` serves `GET /healthz` 200 with `--var` set for ELEVENLABS_API_KEY, ELEVENLABS_WEBHOOK_SECRET, AGENT_ID, PHONE_NUMBER_ID, ASSISTANT_NUMBER and OWNER_NAME. Scheduled handlers can be triggered through the local explorer API that wrangler prints.
 - Never run `scripts/setup.py --apply`, `scripts/safety_tests.py --apply`, `pywrangler deploy` or `wrangler d1 ... --remote` for verification. They write to ElevenLabs or Cloudflare, and placing a call is a real phone call.
 
 ### Toolchain
 - Python 3.14, the newest Python Workers runtime. Everything in `[project].dependencies` is vendored into the Worker bundle by `pywrangler`, so keep it to what the Worker imports. Dev tools go in the `dev` group.
-- The test workflow pins setup-uv and uv 0.13.5. Semgrep runs in the `semgrep/semgrep` container, pinned by digest.
+- The test workflow pins setup-uv and uv 0.13.6. Semgrep runs in the `semgrep/semgrep` container, pinned by digest.
+- `pywrangler` runs `npx --yes wrangler`. package.json and package-lock.json pin wrangler, with `min-release-age=7` in .npmrc. Run `npm ci` first, or npx installs the newest wrangler.
 
 ### Deploys outside CI
 - Deployed by hand with `uv run pywrangler deploy` from a checkout of main. There is no deploy workflow.
+- `pywrangler deploy` ignores uv.lock. It runs `uv pip compile pyproject.toml` against PyPI plus https://index.pyodide.org/314.0.7 (unsafe-best-match, wheels only) into a gitignored pylock.toml. On 2026-11-08 that installed cryptography 47.0.0, cffi 2.0.0 and rpds-py 0.30.0 from Pyodide, and sse-starlette 3.7.0 from PyPI.
+- The Pyodide index has no upload dates. With `exclude-newer` in `[tool.uv]`, `pywrangler sync` and deploy fail because cryptography has no usable wheels.
