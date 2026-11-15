@@ -31,9 +31,10 @@ These are the project's point, not style. A change that weakens one needs the ow
 Don't auto-merge.
 
 ### Build and test
-- Install with `uv sync` and `npm ci`. Run `uv run pytest` (129 tests on 2026-11-08, about a second). No test touches the network: ElevenLabs, Pushover and Cloudflare Access keys are faked in `tests/conftest.py`.
+- Install with `uv sync` and `npm ci`. Run `uv run pytest` (129 tests on 2026-11-15, about a second). No test touches the network: ElevenLabs, Pushover and Cloudflare Access keys are faked in `tests/conftest.py`.
 - Check style with `uv run ruff check .` and `uv run ruff format --check .`. CI runs these three commands.
 - `uv run pywrangler dev` runs the Worker in workerd against a local D1. Run `npm ci` and `npx wrangler d1 migrations apply onhold --local` first. Pass settings with `--var NAME:value`. `uv run pywrangler dev --port 8791` serves `GET /healthz` 200 with `--var` set for ELEVENLABS_API_KEY, ELEVENLABS_WEBHOOK_SECRET, AGENT_ID, PHONE_NUMBER_ID, ASSISTANT_NUMBER and OWNER_NAME. Scheduled handlers can be triggered through the local explorer API that wrangler prints.
+- `npm ci` with npm 11.19 skips workerd's postinstall script and prints an install-scripts warning. `uv run pywrangler dev --port 8791` still serves `GET /healthz` 200.
 - Never run `scripts/setup.py --apply`, `scripts/safety_tests.py --apply`, `pywrangler deploy` or `wrangler d1 ... --remote` for verification. They write to ElevenLabs or Cloudflare, and placing a call is a real phone call.
 
 ### Toolchain
@@ -43,5 +44,5 @@ Don't auto-merge.
 
 ### Deploys outside CI
 - Deployed by hand with `uv run pywrangler deploy` from a checkout of main. There is no deploy workflow.
-- `pywrangler deploy` ignores uv.lock. It runs `uv pip compile pyproject.toml` against PyPI plus https://index.pyodide.org/314.0.7 (unsafe-best-match, wheels only) into a gitignored pylock.toml. On 2026-11-08 that installed cryptography 47.0.0, cffi 2.0.0 and rpds-py 0.30.0 from Pyodide, and sse-starlette 3.7.0 from PyPI.
+- `pywrangler deploy` ignores uv.lock. It runs `uv pip compile pyproject.toml` against PyPI plus https://index.pyodide.org/314.0.7 (unsafe-best-match, wheels only) into a gitignored pylock.toml. On 2026-11-15 that resolved cryptography 47.0.0, cffi 2.0.0, rpds-py 0.30.0, attrs 26.1.0, httpx 0.28.1, jsonschema 4.26.0, jsonschema-specifications 2025.9.1 and referencing 0.37.0 from Pyodide, and sse-starlette 3.7.0 and pydantic-core 2.50.4 from PyPI.
 - The Pyodide index has no upload dates. With `exclude-newer` in `[tool.uv]`, `pywrangler sync` and deploy fail because cryptography has no usable wheels.
