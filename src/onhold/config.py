@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from onhold.brief import check_number
+from onhold.brief import MAX_CALL_SECS, check_number
 
 REQUIRED = (
     "ELEVENLABS_API_KEY",
@@ -57,7 +57,7 @@ class Settings:
     paused: bool = False
     allowed_country_codes: tuple[str, ...] = ("1",)
     ringing_timeout_secs: int = 45
-    max_duration_secs: int = 900
+    max_duration_secs: int = MAX_CALL_SECS
     draft_ttl_secs: int = 1800
     transcript_days: int = 30
 

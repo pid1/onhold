@@ -134,6 +134,7 @@ def test_window_honours_daylight_saving():
         (window(tz="Mars/Olympus"), "time zone"),
         (window("2026-11-06T07:30", "2026-11-06T10:00"), "TCPA"),
         (window("2026-11-06T18:00", "2026-11-06T21:30"), "TCPA"),
+        (window("2026-11-06T18:00", "2026-11-06T20:30"), "TCPA"),
     ],
 )
 def test_bad_windows(w, reason):
@@ -176,8 +177,9 @@ def test_default_callback_number_is_used_when_the_brief_has_none():
     assert dv["callback_number"] == "512-555-0177"
 
 
-def test_window_up_to_nine_pm_is_allowed():
-    parse_brief(brief(call_window=window("2026-11-06T08:00", "2026-11-06T21:00")), now=NOW)
+def test_window_up_to_eight_pm_is_allowed():
+    # The last dial at 20:00 still ends by 21:00 under the one-hour cap.
+    parse_brief(brief(call_window=window("2026-11-06T08:00", "2026-11-06T20:00")), now=NOW)
 
 
 def test_callee_timezone_must_match_the_window():
