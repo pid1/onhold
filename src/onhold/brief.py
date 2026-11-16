@@ -10,7 +10,12 @@ the Worker:
 * free text may not carry what the agent must never say on a call: Social
   Security numbers, long digit runs (card, account, licence numbers), street
   addresses. A brief that needs one is refused with the field name, so the
-  agent drafting it can tell the owner the call needs them instead.
+  agent drafting it can tell the owner the call needs them instead;
+* the one way a long number reaches the agent is ``keypad_entries``: numbers
+  the owner approved for this call (an account number, the phone number on the
+  account), each labelled, never an SSN-shaped value. The agent keys them into
+  the callee's phone menu or reads them to the callee's representative, and
+  they are shown in the preview like everything else.
 
 The brief becomes the agent's dynamic variables (``to_dynamic_variables``).
 ElevenLabs accepts only strings, numbers and booleans there, so lists are
@@ -77,7 +82,8 @@ LATEST_START_NOW = time(20, 45)
 
 # Always forbidden, whatever the brief says. Rendered into must_not_share.
 STANDING_DO_NOT_SHARE = (
-    "Any Social Security, driver's licence, passport, account, card, policy or PIN number",
+    "Any Social Security, driver's licence, passport, account, card, policy or PIN number, "
+    "except the keypad entries the owner approved for this call",
     "Any date of birth",
     "Any home, mailing or street address",
     "Any calendar details, schedules or whereabouts of anyone",
@@ -226,6 +232,43 @@ class MenuStep(BaseModel):
     ] = ""
 
 
+MAX_KEYPAD_ENTRIES = 3
+KEYPAD_VALUE = re.compile(r"^\d(?:[ -]?\d){3,24}$")
+
+
+class KeypadEntry(BaseModel):
+    """A number the owner approved for this call: an account number, the phone
+    number on an account, a customer id. The agent may key it in when the
+    callee's phone menu asks for it, or read it to the callee's representative
+    to find the account. It is the only way a long number reaches the agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=60),
+        Field(description="What the number is, e.g. 'Frontier account number'"),
+    ]
+    value: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True),
+        Field(description="The digits, 4-25 of them; spaces and hyphens are allowed"),
+    ]
+
+    @field_validator("value")
+    @classmethod
+    def _value(cls, v: str) -> str:
+        if not KEYPAD_VALUE.match(v):
+            raise ValueError("must be 4-25 digits, optionally grouped with spaces or hyphens")
+        if SSN.fullmatch(v):
+            raise ValueError("looks like a Social Security number; the agent never says one")
+        return v
+
+    @property
+    def digits(self) -> str:
+        return re.sub(r"\D", "", self.value)
+
+
 class CallBrief(BaseModel):
     """What the owner's agent writes before any call. Every field is shown to the voice agent."""
 
@@ -263,6 +306,16 @@ class CallBrief(BaseModel):
             "owner in person or need ID'"
         ),
     ]
+    keypad_entries: Annotated[
+        list[KeypadEntry],
+        Field(
+            max_length=MAX_KEYPAD_ENTRIES,
+            description="Numbers the owner approved for this call, such as the account number "
+            "or the phone number on the account. The agent keys them in when the phone menu "
+            "asks, or reads them to the representative to find the account, and never shares "
+            "them with anyone else. Only what the owner said may be used on this call (max 3).",
+        ),
+    ] = []
     menu_path: Annotated[
         list[MenuStep],
         Field(
@@ -318,6 +371,8 @@ class CallBrief(BaseModel):
                 _check_text(f"{name}[{i}]", item)
         for i, step in enumerate(self.menu_path):
             _check_text(f"menu_path[{i}].option", step.option)
+        for i, entry in enumerate(self.keypad_entries):
+            _check_text(f"keypad_entries[{i}].label", entry.label)
 
 
 def _numbered(items: list[str] | tuple[str, ...], empty: str) -> str:
@@ -327,6 +382,14 @@ def _numbered(items: list[str] | tuple[str, ...], empty: str) -> str:
 
 
 NO_MENU_PATH = "(none saved; listen to the menu)"
+NO_KEYPAD_ENTRIES = "(none: key in or read out no account, ID or phone numbers)"
+
+
+def keypad_entries_text(entries: list[KeypadEntry]) -> str:
+    """1. Example account number: 1234 5678 (keypad: 12345678)"""
+    return _numbered(
+        [f"{e.label}: {e.value} (keypad: {e.digits})" for e in entries], NO_KEYPAD_ENTRIES
+    )
 
 
 def menu_path_text(steps: list[MenuStep]) -> str:
@@ -365,6 +428,7 @@ def to_dynamic_variables(
         ),
         "give_up_when": brief.give_up_when,
         "menu_path": menu_path_text(brief.menu_path),
+        "keypad_entries": keypad_entries_text(brief.keypad_entries),
         "callback_number": speakable_number(
             brief.callback_number or default_callback or assistant_number
         ),

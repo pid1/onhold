@@ -146,6 +146,10 @@ class Service:
             "reference": b.reference,
             **when,
             "first_message": agent_spec.render(agent_spec.first_message(), variables),
+            "first_message_when": (
+                "The agent listens first and says this to the first person who answers, "
+                "never to a recording or phone menu."
+            ),
             "voicemail_message": agent_spec.render(agent_spec.voicemail_message(), variables),
             "dynamic_variables": variables,
         }
@@ -385,7 +389,11 @@ class Service:
 
     async def _learn_menu(self, call: dict, conv: dict, updated: dict) -> None:
         """Save the path that reached a person; mark a planned one that did not work."""
-        steps = report.menu_presses(conv)
+        entries = [
+            "".join(ch for ch in str(e.get("value") or "") if ch.isdigit())
+            for e in (call.get("brief_json") or {}).get("keypad_entries") or []
+        ]
+        steps = report.menu_presses(conv, entries)
         pressed = [s["press"] for s in steps] if steps is not None else None
         planned = [s["press"] for s in (call.get("brief_json") or {}).get("menu_path") or []]
         reached = updated.get("outcome") in REACHED

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from typing import Any
 
 OUTCOMES = ("goal_met", "partial", "needs_owner", "not_reached")
@@ -160,15 +161,18 @@ def _option(reason: Any) -> str:
     return "" if OPTION_DIGITS.search(text) else text
 
 
-def menu_presses(conv: dict) -> list[dict] | None:
+def menu_presses(conv: dict, entries: Iterable[str] = ()) -> list[dict] | None:
     """The keypad presses the agent made, in order: ``[{"press", "option"}]``.
 
     Read from the transcript's tool calls, the record of what was actually
     pressed, not from anything the agent or the callee said. ``option`` is the
-    agent's own reason for the press. A press that failed is left out. Returns
+    agent's own reason for the press. A press that failed is left out, and so is
+    a press that keyed in one of ``entries`` (the digits of the brief's keypad
+    entries), so an account number never becomes part of a saved path. Returns
     None when the presses cannot be a menu path (too many, or one too long to be
     a menu choice), so nothing is learned from that call.
     """
+    entry_digits = {e for e in entries if e}
     turns = conv.get("transcript") or []
     failed = {
         r.get("request_id")
@@ -189,6 +193,8 @@ def menu_presses(conv: dict) -> list[dict] | None:
             except ValueError:
                 return None
             tones = re.sub(r"[wW]", "", str(params.get("dtmf_tones") or ""))
+            if re.sub(r"[*#]", "", tones) in entry_digits:
+                continue
             if not PRESS.match(tones):
                 return None
             steps.append({"press": tones, "option": _option(params.get("reason"))})

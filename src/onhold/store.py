@@ -229,7 +229,10 @@ class Store:
 
     async def purge_transcripts(self, now: int) -> int:
         _, changes = await self._run(
-            "UPDATE calls SET transcript_json = NULL, transcript_purge_at = NULL "
+            # The owner-approved keypad entries (account numbers) go with the
+            # transcript; the rest of the brief stays as the record of the call.
+            "UPDATE calls SET transcript_json = NULL, transcript_purge_at = NULL, "
+            "brief_json = json_remove(brief_json, '$.keypad_entries') "
             "WHERE transcript_purge_at IS NOT NULL AND transcript_purge_at <= ?",
             [now],
         )

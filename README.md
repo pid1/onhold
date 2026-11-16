@@ -40,7 +40,17 @@ come from.
   time zone (TCPA calling hours). A brief is refused if it contains a Social
   Security number, a long digit run (card, account or licence numbers) or a
   street address. Then the call needs you, not an agent.
-- **The agent says it is an AI** at the start of every call, never claims to be
+- **Account numbers only when you approve them, for that call.** Many phone
+  menus won't let anyone through without the account number or the phone
+  number on the account. A brief can carry up to three such numbers in
+  `keypad_entries`, each labelled, never an SSN. They show in the preview, the
+  agent keys them into that business's menu or reads them to its
+  representative and nothing else, and onhold drops them with the transcript
+  after 30 days. They are never saved as part of a menu path.
+- **The agent listens first, then says it is an AI.** Businesses often answer
+  with a recording or a phone menu, so the agent says nothing until someone
+  speaks, works the menu with the keypad, and opens with the AI disclosure to
+  the first person it reaches. It never claims to be
   you, never pays or commits to anything, never books or cancels on your
   behalf, and ends the call rather than improvising. Six safety checks grade
   every call, and a failed check is flagged in the report.
@@ -97,7 +107,8 @@ When a call gets through a phone menu to a person, onhold saves the keypad path
 for that number: `2 (registration), then 0 (a person)`. The path comes from the
 tones the agent actually pressed, as ElevenLabs records them, not from what
 anyone said. A press of five or more digits is never kept, because it could be
-an extension, an ID or an account number.
+an extension, an ID or an account number; a press that keyed in one of the
+brief's `keypad_entries` is left out and the rest of the path is kept.
 
 Before writing a brief, Claude calls `get_menu_paths` and puts a working path
 in the brief's `menu_path`. The agent tries it first and goes back to listening

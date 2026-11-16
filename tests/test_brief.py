@@ -190,3 +190,52 @@ def test_callee_timezone_is_required_without_a_window():
     del data["callee_timezone"]
     with pytest.raises(BriefError, match="callee_timezone"):
         parse_brief(data, now=NOW)
+
+
+# Keypad entries: the one way a long number reaches the agent ------------------
+
+ACCOUNT = {"label": "Example account number", "value": "1234-5678-9012-3456-7"}
+
+
+def test_keypad_entries_carry_long_numbers_the_owner_approved():
+    b = parse_brief(brief(keypad_entries=[ACCOUNT]), now=NOW)
+    dv = to_dynamic_variables(b, "Test Owner", "+15125550100", "c_0123456789abcdef")
+    assert dv["keypad_entries"] == (
+        "1. Example account number: 1234-5678-9012-3456-7 (keypad: 12345678901234567)"
+    )
+    assert "except the keypad entries" in dv["must_not_share"]
+
+
+def test_no_keypad_entries_says_so():
+    dv = to_dynamic_variables(
+        parse_brief(brief(), now=NOW), "Test Owner", "+15125550100", "c_0123456789abcdef"
+    )
+    assert dv["keypad_entries"].startswith("(none")
+
+
+@pytest.mark.parametrize(
+    ("entry", "reason"),
+    [
+        ({"label": "SSN", "value": "078-05-1120"}, "Social Security"),
+        ({"label": "Too short", "value": "123"}, "4-25 digits"),
+        ({"label": "Letters", "value": "12AB34"}, "4-25 digits"),
+        ({"label": "Too long", "value": "1" * 26}, "4-25 digits"),
+        ({"label": "Account 123456789", "value": "1234"}, "long number"),
+        ({"label": "Account", "value": "1234", "note": "x"}, "Extra inputs"),
+    ],
+)
+def test_bad_keypad_entries_are_refused(entry, reason):
+    with pytest.raises(BriefError, match=reason):
+        parse_brief(brief(keypad_entries=[entry]), now=NOW)
+
+
+def test_at_most_three_keypad_entries():
+    with pytest.raises(BriefError, match="keypad_entries"):
+        parse_brief(brief(keypad_entries=[ACCOUNT] * 4), now=NOW)
+
+
+def test_long_numbers_are_still_refused_outside_keypad_entries():
+    with pytest.raises(BriefError, match="long number"):
+        parse_brief(
+            brief(keypad_entries=[ACCOUNT], may_share=["Account 12345678901234567"]), now=NOW
+        )

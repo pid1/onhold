@@ -25,6 +25,7 @@ PLACEHOLDERS = {
     "must_not_share": "1. Any account, licence or card number\n2. Any address",
     "give_up_when": "they need the owner in person or need an ID number",
     "menu_path": "1. Press 2 (vehicle registration)\n2. Press 0 (speak to a person)",
+    "keypad_entries": "(none: key in or read out no account, ID or phone numbers)",
     "callback_number": "512-555-0100",
     "assistant_number": "512-555-0100",
     "call_window": "none (call placed now)",
@@ -44,12 +45,23 @@ def _strip_comments(obj):
     return obj
 
 
-def system_prompt(agent_dir: Path = AGENT_DIR) -> str:
-    return (agent_dir / "system_prompt.md").read_text()
+OPENING_LINE = "[[opening_line]]"
 
 
 def first_message(agent_dir: Path = AGENT_DIR) -> str:
+    """The opening line: AI disclosure, owner and topic.
+
+    It is not ElevenLabs' ``first_message``, which is left empty so the agent
+    listens first instead of talking over a recording or phone menu. The system
+    prompt tells the agent to say this line to the first person it reaches.
+    """
     return (agent_dir / "first_message.txt").read_text().strip()
+
+
+def system_prompt(agent_dir: Path = AGENT_DIR) -> str:
+    return (
+        (agent_dir / "system_prompt.md").read_text().replace(OPENING_LINE, first_message(agent_dir))
+    )
 
 
 def voicemail_message(agent_dir: Path = AGENT_DIR) -> str:
@@ -122,8 +134,9 @@ def built_in_tools(tools: dict) -> dict:
         ),
         "play_keypad_touch_tone": system(
             "play_keypad_touch_tone",
-            "Press keypad digits only to navigate a phone menu toward a person or department. "
-            "Never enter account, ID, PIN, card or date-of-birth digits.",
+            "Press keypad digits to navigate a phone menu toward a person or department, or to "
+            "key in a keypad entry the owner approved for this call when the menu asks for it. "
+            "Never enter any other account, ID, PIN, card or date-of-birth digits.",
             suppress_turn_after_dtmf=True,
         ),
         "skip_turn": system(
@@ -154,7 +167,9 @@ def build_agent_body(
         "tags": spec["tags"],
         "conversation_config": {
             "agent": {
-                "first_message": first_message(agent_dir),
+                # Empty: the agent waits for the callee to speak, and says the
+                # opening line (in the prompt) only once a person is on the line.
+                "first_message": "",
                 "language": spec["language"],
                 "disable_first_message_interruptions": True,
                 "dynamic_variables": {"dynamic_variable_placeholders": placeholders},
