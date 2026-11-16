@@ -31,7 +31,7 @@ These are the project's point, not style. A change that weakens one needs the ow
 Don't auto-merge.
 
 ### Build and test
-- Install with `uv sync` and `npm ci`. Run `uv run pytest` (129 tests on 2026-11-15, about a second). No test touches the network: ElevenLabs, Pushover and Cloudflare Access keys are faked in `tests/conftest.py`.
+- Install with `uv sync` and `npm ci`. Run `uv run pytest` (153 tests on 2026-11-16, about a second). No test touches the network: ElevenLabs, Pushover and Cloudflare Access keys are faked in `tests/conftest.py`.
 - Check style with `uv run ruff check .` and `uv run ruff format --check .`. CI runs these three commands.
 - `uv run pywrangler dev` runs the Worker in workerd against a local D1. Run `npm ci` and `npx wrangler d1 migrations apply onhold --local` first. Pass settings with `--var NAME:value`. `uv run pywrangler dev --port 8791` serves `GET /healthz` 200 with `--var` set for ELEVENLABS_API_KEY, ELEVENLABS_WEBHOOK_SECRET, AGENT_ID, PHONE_NUMBER_ID, ASSISTANT_NUMBER and OWNER_NAME. Scheduled handlers can be triggered through the local explorer API that wrangler prints.
 - `npm ci` with npm 11.19 skips workerd's postinstall script and prints an install-scripts warning. `uv run pywrangler dev --port 8791` still serves `GET /healthz` 200.

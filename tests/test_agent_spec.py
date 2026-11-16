@@ -42,6 +42,12 @@ def test_render_fills_every_variable():
     assert "Test Owner" in text and "{{" not in text
 
 
+def test_the_report_can_find_the_opening_line():
+    # report.from_conversation finds the agent's first words to a person by
+    # the AI disclosure in its opening line.
+    assert report.DISCLOSURE.search(agent_spec.first_message())
+
+
 def test_the_agent_reports_the_outcomes_onhold_understands():
     dc = agent_spec.load()["data_collection"]
     assert tuple(dc["outcome"]["enum"]) == report.OUTCOMES
