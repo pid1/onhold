@@ -69,16 +69,20 @@ STREET = re.compile(
     re.IGNORECASE,
 )
 
-MAX_WINDOW_HOURS = 13  # the whole 08:00-21:00 TCPA day
+# The longest any call may run, everywhere: the voice agent's own cap
+# (agent.json), the report's hold-timeout check and the calling hours below.
+MAX_CALL_SECS = 3600
+MAX_WINDOW_HOURS = 12  # 08:00-20:00: the last call that can still end by 21:00
 MAX_SCHEDULE_DAYS = 14
 MIN_LEAD = timedelta(seconds=60)
 MIN_WINDOW_LEFT = timedelta(minutes=10)
 # TCPA calling hours, in the callee's local time: 8:00 a.m. to 9:00 p.m.
 # (https://elevenlabs.io/docs/eleven-agents/legal/tcpa). A call placed now must
-# start by 20:45 so the 15-minute cap still ends it by 21:00.
+# start by 20:00 so the one-hour cap still ends it by 21:00. A call_window
+# must end by then too, since a scheduled call may dial at any point in it.
 CALL_HOURS_START = time(8, 0)
 CALL_HOURS_END = time(21, 0)
-LATEST_START_NOW = time(20, 45)
+LATEST_START_NOW = time(21 - MAX_CALL_SECS // 3600, 0)
 
 # Always forbidden, whatever the brief says. Rendered into must_not_share.
 STANDING_DO_NOT_SHARE = (
@@ -130,12 +134,14 @@ def _check_tz(field: str, value: str) -> str:
 
 
 def check_call_hours(now: datetime, tz: str) -> None:
-    """Refuse a call placed now outside 8:00-20:45 in the callee's time zone."""
+    """Refuse a call placed now outside 8:00-20:00 in the callee's time zone."""
     local = now.astimezone(ZoneInfo(tz)).time()
     if not (CALL_HOURS_START <= local <= LATEST_START_NOW):
         raise BriefError(
-            f"it is {local:%H:%M} in {tz}; calls are placed only 08:00-20:45 callee time "
-            "(TCPA hours 8 a.m.-9 p.m.). Draft it with a call_window and use schedule_call."
+            f"it is {local:%H:%M} in {tz}; calls are placed only "
+            f"{CALL_HOURS_START:%H:%M}-{LATEST_START_NOW:%H:%M} callee time (TCPA hours "
+            "8 a.m.-9 p.m., less the one-hour call cap). Draft it with a call_window and use "
+            "schedule_call."
         )
 
 
@@ -197,11 +203,12 @@ class CallWindow(BaseModel):
         if (
             local_start.date() != local_end.date()
             or local_start.time() < CALL_HOURS_START
-            or local_end.time() > CALL_HOURS_END
+            or local_end.time() > LATEST_START_NOW
         ):
             raise BriefError(
-                "call_window: must lie within 08:00-21:00 on one day in the callee's time "
-                "zone (TCPA calling hours)"
+                f"call_window: must lie within {CALL_HOURS_START:%H:%M}-"
+                f"{LATEST_START_NOW:%H:%M} on one day in the callee's time zone (TCPA calling "
+                "hours, less the one-hour call cap)"
             )
         if start - now > timedelta(days=MAX_SCHEDULE_DAYS):
             raise BriefError(f"call_window: must start within {MAX_SCHEDULE_DAYS} days")

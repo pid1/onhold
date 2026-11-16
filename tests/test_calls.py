@@ -47,8 +47,8 @@ async def test_a_draft_shows_everything_and_dials_nothing(service, api):
 
 
 async def test_drafting_outside_calling_hours_is_refused(service, clock):
-    clock.now = clock.now.replace(hour=3)  # 21:00 the evening before, in Chicago
-    with pytest.raises(BriefError, match="08:00-20:45"):
+    clock.now = clock.now.replace(hour=2, minute=30)  # 20:30 the evening before, in Chicago
+    with pytest.raises(BriefError, match="08:00-20:00"):
         await service.draft_call(brief())
 
 
@@ -244,7 +244,7 @@ async def test_unanswered_questions_are_marked(service, api, store):
 
 async def test_hold_timeout_at_the_duration_cap(service, api, store):
     call_id = await placed(service, api)
-    conv = conversation(call_id, metadata={"call_duration_secs": 900})
+    conv = conversation(call_id, metadata={"call_duration_secs": 3600})
     conv["analysis"]["data_collection_results"]["outcome"] = {"value": "not_reached"}
     conv["analysis"]["data_collection_results"]["not_reached_reason"] = {"value": "none"}
     await service.ingest_webhook({"type": "post_call_transcription", "data": conv})

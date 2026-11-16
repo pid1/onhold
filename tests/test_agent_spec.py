@@ -11,7 +11,7 @@ import pytest
 from conftest import NOW, brief
 
 from onhold import agent_spec, report
-from onhold.brief import parse_brief, to_dynamic_variables
+from onhold.brief import MAX_CALL_SECS, parse_brief, to_dynamic_variables
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import safety_tests  # noqa: E402
@@ -70,7 +70,7 @@ def test_the_body_carries_the_owner_and_no_recording():
     assert agent["dynamic_variables"]["dynamic_variable_placeholders"]["owner_name"] == "Test Owner"
     assert agent["prompt"]["mcp_server_ids"] == []
     assert body["platform_settings"]["privacy"]["record_voice"] is False
-    assert body["conversation_config"]["conversation"]["max_duration_seconds"] == 900
+    assert body["conversation_config"]["conversation"]["max_duration_seconds"] == MAX_CALL_SECS
 
 
 def test_the_webhook_is_attached_only_when_given():
@@ -87,7 +87,7 @@ def test_the_webhook_is_attached_only_when_given():
 
 
 def test_the_hold_rule_counts_skip_turns():
-    assert "fifth in a row" in agent_spec.system_prompt()
+    assert "twentieth in a row" in agent_spec.system_prompt()
     assert agent_spec.load()["tools"]["skip_turn_wait_secs"] == 90
 
 
@@ -220,3 +220,10 @@ def test_the_agent_listens_first_and_discloses_to_a_person():
     assert agent_spec.OPENING_LINE not in prompt
     assert agent_spec.first_message() in prompt
     assert "{{keypad_entries}}" in prompt
+
+
+def test_one_call_cap_everywhere():
+    from onhold.config import Settings
+
+    assert agent_spec.load()["conversation"]["max_duration_seconds"] == MAX_CALL_SECS == 3600
+    assert Settings.__dataclass_fields__["max_duration_secs"].default == MAX_CALL_SECS

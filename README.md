@@ -36,8 +36,9 @@ come from.
   is no retry loop and no queue of its own.
 - **Briefs are checked before anything leaves the Worker.** Numbers must be
   E.164 and in an allowed country, and premium-rate and service numbers are
-  refused. Calls are placed only between 8 a.m. and 8:45 p.m. in the callee's
-  time zone (TCPA calling hours). A brief is refused if it contains a Social
+  refused. Every call is capped at one hour, so calls are placed only between
+  8 a.m. and 8 p.m. in the callee's time zone and still end by 9 p.m. (TCPA
+  calling hours). A brief is refused if it contains a Social
   Security number, a long digit run (card, account or licence numbers) or a
   street address. Then the call needs you, not an agent.
 - **Account numbers only when you approve them, for that call.** Many phone
@@ -81,7 +82,7 @@ ElevenLabs about any call that should have finished.
 
 The agent picks the outcome, and onhold checks it against the phone network and
 the clock. If nobody on the other end spoke, the call wasn't reached. A
-20-second call didn't meet its goal. A call cut off at the 15-minute cap while
+20-second call didn't meet its goal. A call cut off at the one-hour cap while
 waiting is a hold timeout. Every correction is noted in the report.
 
 Text that came from the person called is returned under
@@ -141,7 +142,7 @@ public HTTPS address for the webhook.
 
 The Cloudflare side is free at this scale. A typical 5-minute call costs about
 $0.40 in ElevenLabs minutes, $0.07 in Twilio charges and a few cents of LLM.
-The 15-minute cap bounds one call at about $1.40. A local number is $1.15 a
+The one-hour cap bounds one call at about $5.60; holds are what use it up. A local number is $1.15 a
 month at Twilio. See [docs/RESEARCH.md](docs/RESEARCH.md) for the sources.
 
 ## Development

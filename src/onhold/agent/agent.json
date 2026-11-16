@@ -34,7 +34,7 @@
     "turn_eagerness": "patient"
   },
   "conversation": {
-    "max_duration_seconds": 900
+    "max_duration_seconds": 3600
   },
   "tools": {
     "_note": "Built-in system tools only. No language detection: English only. No transfers. skip_turn_wait_secs is also the unit the hold rule in system_prompt.md counts in.",
