@@ -364,6 +364,17 @@ async def test_transcripts_are_purged_after_30_days(service, api, store, clock):
     assert "deleted after 30 days" in v[UNTRUSTED_KEY]["transcript"]
 
 
+async def test_keypad_entries_are_purged_with_the_transcript(service, api, store, clock):
+    entry = {"label": "Account", "value": "12345678901234567"}
+    call_id = await placed(service, api, keypad_entries=[entry])
+    await service.ingest_webhook({"type": "post_call_transcription", "data": conversation(call_id)})
+    assert (await store.get_call(call_id))["brief_json"]["keypad_entries"] == [entry]
+    clock.advance(days=31)
+    await service.purge()
+    b = (await store.get_call(call_id))["brief_json"]
+    assert "keypad_entries" not in b and b["topic"] == "a licence plate renewal"
+
+
 async def test_delete_needs_confirm_and_a_finished_call(service, api, store):
     call_id = await placed(service, api)
     with pytest.raises(CallError, match="cancel or wait"):

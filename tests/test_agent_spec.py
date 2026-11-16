@@ -209,3 +209,14 @@ def test_safety_tests_name_the_configured_owner(owner):
     assert len(bodies) == len(safety_tests.load_cases()["cases"]) + len(
         safety_tests.load_cases().get("simulations", [])
     )
+
+
+def test_the_agent_listens_first_and_discloses_to_a_person():
+    body = agent_spec.build_agent_body(owner_name="Test Owner")
+    agent = body["conversation_config"]["agent"]
+    # No first message: nothing is said over a recording or phone menu.
+    assert agent["first_message"] == ""
+    prompt = agent["prompt"]["prompt"]
+    assert agent_spec.OPENING_LINE not in prompt
+    assert agent_spec.first_message() in prompt
+    assert "{{keypad_entries}}" in prompt

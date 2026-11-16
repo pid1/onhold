@@ -272,3 +272,28 @@ def test_an_existing_database_gets_only_the_new_migration(tmp_path):
     tables = {r[0] for r in s.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"calls", "drafts", "menu_paths"} <= tables
     assert s.conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0] == 1
+
+
+def test_a_keyed_in_entry_is_never_part_of_a_path():
+    conv = {
+        "transcript": menu_transcript(
+            press("12345678901234567#", "Entering the account number", "a"),
+            press("2", "billing", "b"),
+        )
+    }
+    assert report.menu_presses(conv, ["12345678901234567"]) == [{"press": "2", "option": "billing"}]
+    # Without the brief's entries, the long press means no path is learned at all.
+    assert report.menu_presses(conv) is None
+
+
+async def test_a_path_is_saved_around_a_keypad_entry(service, api, store):
+    path = [{"press": "12345678901234567", "option": "Entering the account number"}, *PATH]
+    await call_through(
+        service,
+        api,
+        lambda c, conv_id: through_menu(c, path=path, conv_id=conv_id),
+        keypad_entries=[{"label": "Account", "value": "1234 5678 9012 3456 7"}],
+    )
+    [row] = await store.menu_paths(NUMBER)
+    assert row["digits"] == "2,0"
+    assert "12345678901234567" not in json.dumps(row)
