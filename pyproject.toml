@@ -30,7 +30,11 @@ dev = [
 
 [tool.uv]
 package = false
-# sadr: hold at no uv cooldown, pywrangler resolves cryptography and other wheels from index.pyodide.org, which has no upload dates, so a cooldown here fails the deploy
+exclude-newer = "7 days"
+
+# sadr: hold at no cooldown for uv pip, pywrangler resolves cryptography and other wheels from index.pyodide.org, which has no upload dates, so a cooldown there fails the deploy
+[tool.uv.pip]
+exclude-newer = false
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
