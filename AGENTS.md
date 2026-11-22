@@ -39,7 +39,7 @@ Don't auto-merge.
 
 ### Toolchain
 - Python 3.14, the newest Python Workers runtime. Everything in `[project].dependencies` is vendored into the Worker bundle by `pywrangler`, so keep it to what the Worker imports. Dev tools go in the `dev` group.
-- The test workflow pins setup-uv and uv 0.13.6. Semgrep runs in the `semgrep/semgrep` container, pinned by digest.
+- The test workflow pins setup-uv and an exact uv version. Semgrep runs in the `semgrep/semgrep` container, pinned by digest.
 - `pywrangler` runs `npx --yes wrangler`. package.json and package-lock.json pin wrangler, with `min-release-age=7` in .npmrc. Run `npm ci` first, or npx installs the newest wrangler.
 
 ### Deploys outside CI
