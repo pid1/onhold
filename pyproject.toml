@@ -32,9 +32,21 @@ dev = [
 package = false
 exclude-newer = "7 days"
 
-# sadr: hold at no cooldown for uv pip, pywrangler resolves cryptography and other wheels from index.pyodide.org, which has no upload dates, so a cooldown there fails the deploy
+# pywrangler sync and deploy resolve with `uv pip compile`, so the cooldown applies there too.
 [tool.uv.pip]
-exclude-newer = false
+exclude-newer = "7 days"
+
+# sadr: hold at no cooldown for the packages pywrangler takes from index.pyodide.org, which has no upload dates, so a cooldown on them fails the deploy
+# A package that the deploy starts taking from index.pyodide.org needs its own line here.
+[tool.uv.pip.exclude-newer-package]
+attrs = false
+cffi = false
+cryptography = false
+httpx = false
+jsonschema = false
+jsonschema-specifications = false
+referencing = false
+rpds-py = false
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
