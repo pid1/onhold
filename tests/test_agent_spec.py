@@ -34,10 +34,6 @@ def used_variables() -> set[str]:
     return set().union(*(agent_spec.variables_used(t) for t in texts))
 
 
-CLASS_VARIABLES = {"call_class", "class_may_share", "charge_on_file"}
-
-
-@pytest.mark.skipif(not CLASS_VARIABLES <= set(variables()), reason="needs cc-brief")
 def test_every_variable_the_agent_uses_is_sent():
     assert used_variables() <= set(variables())
 
