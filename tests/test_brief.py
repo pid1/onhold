@@ -528,7 +528,7 @@ async def test_a_refused_draft_lists_every_issue(service):
 
 
 @pytest.mark.parametrize(
-    "text", ["Taking Wegovy 1 mg weekly per Dr Lee", "2 tablets daily per Dr Ortiz"]
+    "text", ["Taking Examplol 1 mg weekly per Dr Lee", "2 tablets daily per Dr Ortiz"]
 )
 def test_a_dose_before_a_doctor_is_not_a_street_address(text):
     parse_brief(brief(goal=f"Ask about the refill. {text}."), now=NOW)

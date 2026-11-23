@@ -92,7 +92,7 @@ NOV23_MAY_SHARE = [
     "Callback number: 512-555-0142",
     "Date of birth: March 4, 1980",
     "Pharmacy: Example Pharmacy on Elm",
-    "Taking Wegovy 1 mg weekly",
+    "Taking Examplol 1 mg weekly",
 ]
 
 
@@ -112,7 +112,7 @@ def nov23_brief(start="2026-11-23T09:05", end="2026-11-23T12:00", **over) -> dic
         give_up_when="they need the patient on the line",
         callee_timezone="America/Chicago",
         call_window={"timezone": "America/Chicago", "start": start, "end": end},
-        reference="wegovy-1mg-escalation",
+        reference="refill-escalation",
         **over,
     )
 
