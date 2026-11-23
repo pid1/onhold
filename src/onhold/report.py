@@ -11,7 +11,13 @@ one party that cannot see whether it was talking to a person:
 
 * no turn from the other side means nobody was reached, whatever was picked;
 * a call under ``MIN_GOAL_SECS`` cannot have met its goal;
-* a call cut off at the duration cap while waiting is a hold timeout.
+* a call cut off at the duration cap while waiting is a hold timeout;
+* a call the other side hung up on before the agent got past its opening line
+  is a hang-up, not a conversation: not reached;
+* a brief whose questions all went unanswered did not meet its goal.
+
+When the outcome is corrected away from ``goal_met``, a ``goal_achieved``
+evaluation of ``success`` is corrected with it, the way that criterion reads.
 
 Every adjustment is recorded in ``details.checks`` so the report says why.
 """
@@ -37,6 +43,7 @@ REASONS = (
     "call_failed",
 )
 MAX_QUESTIONS = 10
+GOAL = "goal_achieved"
 MIN_GOAL_SECS = 20
 NOT_ANSWERED = {"", "not answered", "none", "n/a", "unknown"}
 DETAIL_FIELDS = (
@@ -59,6 +66,11 @@ OPTION_DIGITS = re.compile(r"(?:\d[ -]?){5,}")
 # carry the old id too, with the new one's result, for one release.
 CRITERION_ALIASES = {"no_sensitive_info_shared": "shared_only_permitted_info"}
 MAX_SHARED_ITEMS = 20
+# The opening line's AI disclosure (agent/first_message.txt), which marks the
+# agent's first words to a person.
+DISCLOSURE = re.compile(r"\bAI\b")
+# ElevenLabs' termination reason when the person called hung up.
+REMOTE_HANGUP = re.compile(r"remote party", re.IGNORECASE)
 # Twilio's failure reasons as ElevenLabs relays them.
 FAILURE_REASONS = {"busy": "busy", "no-answer": "no_answer", "no_answer": "no_answer"}
 
@@ -91,6 +103,19 @@ def _transcript(turns: list[dict]) -> list[dict]:
     return out
 
 
+def _opening_only(transcript: list[dict]) -> str | None:
+    """The opening line, when the agent said nothing after it; else None.
+
+    The opening line is the agent's first line with the AI disclosure, or its
+    first line at all when none has it.
+    """
+    agent = [t["message"] for t in transcript if t["role"] == "agent"]
+    if not agent:
+        return None
+    opening = next((i for i, m in enumerate(agent) if DISCLOSURE.search(m)), 0)
+    return agent[opening] if opening == len(agent) - 1 else None
+
+
 def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) -> dict:
     """The report fields for a finished conversation (webhook data or GET)."""
     meta = conv.get("metadata") or {}
@@ -105,6 +130,16 @@ def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) 
     outcome = data.get("outcome") if data.get("outcome") in OUTCOMES else None
     reason = data.get("not_reached_reason") if data.get("not_reached_reason") in REASONS else None
     heard_them = any(t["role"] == "them" for t in transcript)
+    reported = outcome
+
+    answers = []
+    for i, q in enumerate(questions[:MAX_QUESTIONS], 1):
+        value = data.get(f"answer_{i}")
+        text = str(value).strip() if value is not None else ""
+        answered = text.lower() not in NOT_ANSWERED
+        answers.append({"question": q, "answered": answered, "answer": text if answered else None})
+    any_answered = any(a["answered"] for a in answers)
+    shared = _lines(data.get("owner_facts_shared"))
 
     if outcome is None:
         outcome = "partial" if heard_them else "not_reached"
@@ -112,6 +147,28 @@ def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) 
     if not heard_them and outcome != "not_reached":
         checks.append(f"Reported {outcome}, but nobody on the other end spoke: not reached.")
         outcome = "not_reached"
+    opening = _opening_only(transcript)
+    if (
+        outcome != "not_reached"
+        and heard_them
+        and REMOTE_HANGUP.search(termination)
+        and opening is not None
+        and not any_answered
+        # Anything the agent says it shared must have been in the opening line
+        # (the owner's name, the topic).
+        and all(fact.lower() in opening.lower() for fact in shared)
+    ):
+        checks.append(
+            f"Reported {outcome}, but they hung up before the agent said more than its"
+            " opening line: not reached."
+        )
+        outcome, reason = "not_reached", "hung_up"
+    if outcome == "goal_met" and answers and not any_answered:
+        checks.append(
+            f"Reported goal_met, but none of the {len(answers)} questions was answered:"
+            " marked partial."
+        )
+        outcome = "partial"
     if outcome == "goal_met" and duration < MIN_GOAL_SECS:
         checks.append(f"Reported goal_met, but the call lasted {duration}s: marked partial.")
         outcome = "partial"
@@ -127,12 +184,14 @@ def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) 
     if outcome != "not_reached":
         reason = None
 
-    answers = []
-    for i, q in enumerate(questions[:MAX_QUESTIONS], 1):
-        value = data.get(f"answer_{i}")
-        text = str(value).strip() if value is not None else ""
-        answered = text.lower() not in NOT_ANSWERED
-        answers.append({"question": q, "answered": answered, "answer": text if answered else None})
+    evaluation = {
+        k: (v or {}).get("result")
+        for k, v in (analysis.get("evaluation_criteria_results") or {}).items()
+    }
+    if reported == "goal_met" and outcome != "goal_met" and evaluation.get(GOAL) == "success":
+        # The criterion reads: unknown if no person was reached, failure if not met.
+        evaluation[GOAL] = "unknown" if outcome == "not_reached" else "failure"
+        checks.append(f"The {GOAL} evaluation said success; corrected to {evaluation[GOAL]}.")
 
     details = {k: data.get(k) for k in DETAIL_FIELDS if data.get(k) not in (None, "")}
     shared_items = [i for i in _lines(data.get("shared_items")) if i.lower() not in NOT_ANSWERED]
@@ -147,10 +206,6 @@ def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) 
     if checks:
         details["checks"] = checks
 
-    evaluation = {
-        k: (v or {}).get("result")
-        for k, v in (analysis.get("evaluation_criteria_results") or {}).items()
-    }
     return {
         "status": "ended",
         "outcome": outcome,
@@ -159,7 +214,7 @@ def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) 
         "answers_json": answers,
         "follow_ups_json": _lines(data.get("follow_ups")),
         "details_json": details,
-        "shared_json": _lines(data.get("owner_facts_shared")),
+        "shared_json": shared,
         "evaluation_json": evaluation,
         "conversation_id": conv.get("conversation_id"),
         "started_at": started,

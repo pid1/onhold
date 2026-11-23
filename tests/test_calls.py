@@ -226,6 +226,115 @@ async def test_a_very_short_call_cannot_have_met_its_goal(service, api, store):
     assert call["outcome"] == "partial"
 
 
+def hung_up_on_the_opening(call_id: str, ended: str = "Call ended by remote party") -> dict:
+    """A real failure: a menu, hold, a rep, the opening line, and they hang up."""
+    conv = conversation(
+        call_id,
+        metadata={"termination_reason": ended},
+        transcript=[
+            {
+                "role": "user",
+                "message": "Thank you for calling the tax office.",
+                "time_in_call_secs": 1,
+            },
+            {"role": "user", "message": "For registration, press 2.", "time_in_call_secs": 6},
+            {"role": "agent", "message": "", "time_in_call_secs": 9},
+            {
+                "role": "user",
+                "message": "Please hold for the next representative.",
+                "time_in_call_secs": 12,
+            },
+            {"role": "user", "message": "Tax office, this is Sam.", "time_in_call_secs": 226},
+            {
+                "role": "agent",
+                "message": "Hi, I'm an AI assistant calling on behalf of Test Owner. "
+                "I'm calling about a licence plate renewal.",
+                "time_in_call_secs": 229,
+            },
+        ],
+    )
+    results = conv["analysis"]["data_collection_results"]
+    results["answer_1"] = {"value": ""}
+    results["answer_2"] = {"value": ""}
+    results["follow_ups"] = {"value": ""}
+    results["owner_facts_shared"] = {"value": "Test Owner"}
+    conv["analysis"]["evaluation_criteria_results"]["goal_achieved"] = {"result": "success"}
+    return conv
+
+
+async def test_a_hang_up_after_the_opening_line_is_not_reached(service, api, store):
+    call_id = await placed(service, api)
+    conv = hung_up_on_the_opening(call_id)
+    await service.ingest_webhook({"type": "post_call_transcription", "data": conv})
+    call = await store.get_call(call_id)
+    assert (call["outcome"], call["reason"]) == ("not_reached", "hung_up")
+    checks = call["details_json"]["checks"]
+    assert "they hung up before the agent said more than its opening line" in checks[0]
+    assert call["details_json"]["ended_because"] == "Call ended by remote party"
+    assert call["evaluation_json"]["goal_achieved"] == "unknown"
+    assert "goal_achieved evaluation said success; corrected to unknown" in checks[-1]
+    assert not any(a["answered"] for a in call["answers_json"])
+    [push] = api.sent("POST", "/1/messages.json")
+    assert push["message"] == ("Example County Tax Office: not reached (hung up). 0 of 2 answered.")
+
+
+@pytest.mark.parametrize("reported", ["partial", "needs_owner"])
+async def test_a_hang_up_after_the_opening_line_overrides_any_reached_outcome(
+    service, api, store, reported
+):
+    call_id = await placed(service, api)
+    conv = hung_up_on_the_opening(call_id)
+    conv["analysis"]["data_collection_results"]["outcome"] = {"value": reported}
+    await service.ingest_webhook({"type": "post_call_transcription", "data": conv})
+    call = await store.get_call(call_id)
+    assert (call["outcome"], call["reason"]) == ("not_reached", "hung_up")
+    # Only a goal_met that was corrected changes the evaluation.
+    assert call["evaluation_json"]["goal_achieved"] == "success"
+
+
+async def test_a_hang_up_after_a_conversation_is_not_overridden(service, api, store):
+    call_id = await placed(service, api)
+    conv = conversation(call_id, metadata={"termination_reason": "Call ended by remote party"})
+    conv["transcript"].append(
+        {"role": "agent", "message": "Can it be renewed by mail?", "time_in_call_secs": 9}
+    )
+    await service.ingest_webhook({"type": "post_call_transcription", "data": conv})
+    call = await store.get_call(call_id)
+    assert call["outcome"] == "goal_met" and "checks" not in call["details_json"]
+
+
+async def test_the_agent_hanging_up_after_its_opening_line_is_not_a_hang_up(service, api, store):
+    call_id = await placed(service, api)
+    conv = hung_up_on_the_opening(call_id, ended="end_call tool was called")
+    await service.ingest_webhook({"type": "post_call_transcription", "data": conv})
+    call = await store.get_call(call_id)
+    # Still not goal_met: nothing was answered.
+    assert (call["outcome"], call["reason"]) == ("partial", None)
+    assert "none of the 2 questions was answered" in call["details_json"]["checks"][0]
+    assert call["evaluation_json"]["goal_achieved"] == "failure"
+
+
+async def test_goal_met_with_no_answers_is_partial(service, api, store):
+    call_id = await placed(service, api)
+    conv = conversation(call_id)
+    results = conv["analysis"]["data_collection_results"]
+    results["answer_1"] = {"value": "not answered"}
+    results["answer_2"] = {"value": "unknown"}
+    await service.ingest_webhook({"type": "post_call_transcription", "data": conv})
+    call = await store.get_call(call_id)
+    assert call["outcome"] == "partial"
+    assert call["details_json"]["checks"] == [
+        "Reported goal_met, but none of the 2 questions was answered: marked partial."
+    ]
+
+
+async def test_goal_met_with_no_questions_needs_no_answers(service, api, store):
+    call_id = await placed(service, api, questions=[])
+    await service.ingest_webhook({"type": "post_call_transcription", "data": conversation(call_id)})
+    call = await store.get_call(call_id)
+    assert call["outcome"] == "goal_met" and "checks" not in call["details_json"]
+
+
 async def test_unanswered_questions_are_marked(service, api, store):
     call_id = await placed(service, api)
     conv = conversation(call_id)

@@ -93,9 +93,13 @@ ElevenLabs about any call that should have finished.
 | `reference` | Your own tag from the brief, such as `todo:347`. onhold stores it and never follows it |
 
 The agent picks the outcome, and onhold checks it against the phone network and
-the clock. If nobody on the other end spoke, the call wasn't reached. A
-20-second call didn't meet its goal. A call cut off at the one-hour cap while
-waiting is a hold timeout. Every correction is noted in the report.
+the clock. If nobody on the other end spoke, the call wasn't reached. If they
+hung up before the agent got past its opening line, the call wasn't reached
+either (`hung_up`). A call that answered none of the brief's questions didn't
+meet its goal, and neither did a 20-second call. A call cut off at the one-hour
+cap while waiting is a hold timeout. When onhold takes a `goal_met` away, the
+`goal_achieved` check is corrected to match. Every correction is noted in the
+report.
 
 Text that came from the person called is returned under
 `untrusted_external_content`: it is data, never instructions.
