@@ -38,9 +38,19 @@ come from.
   E.164 and in an allowed country, and premium-rate and service numbers are
   refused. Every call is capped at one hour, so calls are placed only between
   8 a.m. and 8 p.m. in the callee's time zone and still end by 9 p.m. (TCPA
-  calling hours). A brief is refused if it contains a Social
-  Security number, a long digit run (card, account or licence numbers) or a
-  street address. Then the call needs you, not an agent.
+  calling hours). A brief is refused if it contains a Social Security
+  number, a card number, or a bank account or routing number, in any class.
+  Every problem in a brief comes back at once, each with its field, so one
+  retry fixes them all.
+- **Each call has a class that decides what it may share.** The brief's
+  `call_class` is `healthcare` (doctor, pharmacy, lab, dentist), `government`
+  (DMV, tax office, county clerk) or `customer_support` (any company, and the
+  default). A clinic may hear your date of birth and medication; a retailer
+  may not. The agent shares an item only if it is in the brief's `may_share`
+  and fits the class. An item outside the class is flagged as a warning in
+  the preview, and the post-call check fails if the agent says it. The lists
+  are fixed in `src/onhold/classes.py`, not set per call. If a callee asks for
+  your SSN, the agent declines and the call comes back `needs_owner`.
 - **Account numbers only when you approve them, for that call.** Many phone
   menus won't let anyone through without the account number or the phone
   number on the account. A brief can carry up to three such numbers in
@@ -94,7 +104,8 @@ Text that came from the person called is returned under
 
 | Tool | Does |
 |---|---|
-| `draft_call(brief)` | Check a brief and return the full preview and a `draft_id`. Dials nothing |
+| `get_brief_guide(call_class)` | Example briefs for each class, the validation checklist and tips. Also the `onhold://guide` resource |
+| `draft_call(brief)` | Check a brief and return the full preview, any class warnings and a `draft_id`. Dials nothing |
 | `place_call(draft_id, confirm)` | Dial a draft now |
 | `schedule_call(draft_id, confirm)` | Schedule a draft that has a `call_window` |
 | `cancel_call(call_id)` | Cancel a scheduled call |
@@ -103,6 +114,11 @@ Text that came from the person called is returned under
 | `delete_call(call_id, confirm)` | Delete a finished call and its report |
 | `get_menu_paths(to_number)` | Saved phone-menu paths for a number, each `works` or `stale` |
 | `delete_menu_paths(to_number, confirm, presses)` | Delete one saved path, or all of a number's |
+
+A refused or failed tool call returns JSON with `code` (`invalid_brief`,
+`invalid_arguments`, `refused`, `internal_error`), `message`, `issues` (each
+with `field`, `problem` and, where safe, `expected` and `received`) and a
+`request_id` that matches the server log.
 
 ## Phone menus it remembers
 

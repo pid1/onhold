@@ -525,3 +525,15 @@ async def test_a_refused_draft_lists_every_issue(service):
         )
     fields = {i["field"] for i in e.value.issues}
     assert fields == {"brief.may_share[0]", "brief.to_number", "brief.goal"}
+
+
+@pytest.mark.parametrize(
+    "text", ["Taking Wegovy 1 mg weekly per Dr Lee", "2 tablets daily per Dr Ortiz"]
+)
+def test_a_dose_before_a_doctor_is_not_a_street_address(text):
+    parse_brief(brief(goal=f"Ask about the refill. {text}."), now=NOW)
+
+
+def test_a_street_address_in_the_goal_is_still_refused():
+    with pytest.raises(BriefError, match="street address"):
+        parse_brief(brief(goal="Ask them to mail it to 12 Oak Hollow Dr."), now=NOW)

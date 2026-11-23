@@ -9,7 +9,7 @@ import pytest
 from mcp_helpers import call_tool, mcp_client, rpc
 
 from onhold import classes, guide
-from onhold.brief import CallBrief, parse_brief
+from onhold.brief import parse_brief
 from onhold.mcp_server import INSTRUCTIONS
 
 NOW = datetime(2026, 11, 20, 15, 0, tzinfo=UTC)  # a Friday, 09:00 in Chicago
@@ -20,7 +20,6 @@ def client(service, monkeypatch):
     return mcp_client(service, monkeypatch)
 
 
-@pytest.mark.skipif("call_class" not in CallBrief.model_fields, reason="needs cc-brief")
 @pytest.mark.parametrize("call_class", classes.CALL_CLASSES)
 def test_every_example_brief_validates(call_class):
     example = guide.examples(NOW)[call_class]

@@ -13,8 +13,6 @@ import pytest
 from conftest import brief
 from mcp_helpers import call_tool, mcp_client
 
-from onhold.brief import CallBrief
-
 pytestmark = pytest.mark.anyio
 
 # 2026-11-23 08:40 in America/Chicago (CST): the morning the brief was drafted.
@@ -119,22 +117,6 @@ def nov23_brief(start="2026-11-23T09:05", end="2026-11-23T12:00", **over) -> dic
     )
 
 
-CLASSES_MERGED = "call_class" in CallBrief.model_fields
-
-
-@pytest.mark.skipif(CLASSES_MERGED, reason="call classes allow a labelled callback number")
-async def test_nov23_brief_is_refused_with_the_field_that_failed(client, clock, api):
-    """A phone number written into may_share trips the long-digit rule. Before, the
-    BriefError was not a ToolError, so the SDK hid it as a crash."""
-    clock.now = NOV23_MORNING
-    err = (await call_tool(client, "draft_call", {"brief": nov23_brief()}))["error"]
-    assert_shape(err, "invalid_brief")
-    assert any("may_share" in f and "1" in f for f in fields(err)), err
-    assert "callback_number" in str(err["issues"])
-    assert api.dials() == 0
-
-
-@pytest.mark.skipif(not CLASSES_MERGED, reason="needs cc-brief")
 async def test_nov23_brief_drafts_as_a_healthcare_call(client, clock, api):
     """With call classes, the labelled callback number is fine to share with a clinic."""
     clock.now = NOV23_MORNING

@@ -93,8 +93,10 @@ NANP_NON_US_CA = {
 }
 SSN = re.compile(r"\b\d{3}[- ]\d{2}[- ]\d{4}\b")
 LONG_DIGITS = re.compile(r"(?:\d[ -]?){9,}")
+# A number followed by a dose or quantity unit ("1 mg weekly per Dr Lee") is not
+# a house number.
 STREET = re.compile(
-    r"\b\d{1,6}\s+(?:[A-Za-z0-9.'-]+\s+){1,4}"
+    r"\b\d{1,6}\s+(?!(?:mg|mcg|ml|g|kg|units?|iu|tabs?|tablets?|pills?|doses?|times|x)\b)(?:[A-Za-z0-9.'-]+\s+){1,4}"
     r"(?:st|street|ave|avenue|rd|road|blvd|boulevard|dr|drive|ln|lane|ct|court|way|"
     r"pl|place|pkwy|parkway|hwy|highway|cir|circle|ter|terrace|trl|trail)\b\.?",
     re.IGNORECASE,
