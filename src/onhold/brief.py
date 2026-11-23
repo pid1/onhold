@@ -31,6 +31,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
+from onhold.errors import OnholdError
+
 E164 = re.compile(r"^\+[1-9]\d{7,14}$")
 # NANP numbers that must never be dialled by an agent: premium rate (900, 976),
 # N11 service codes and invalid area codes or exchanges.
@@ -99,8 +101,10 @@ Item = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=600)]
 
 
-class BriefError(ValueError):
-    """The brief was refused. The message names the field and the reason."""
+class BriefError(OnholdError):
+    """The brief was refused. The message names the field and the reason; ``issues`` lists each."""
+
+    code = "invalid_brief"
 
 
 def check_number(value: str, allowed_country_codes: tuple[str, ...] = ("1",)) -> str:

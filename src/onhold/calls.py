@@ -44,6 +44,7 @@ from onhold.brief import (
 )
 from onhold.config import Settings
 from onhold.elevenlabs import ElevenLabs, ElevenLabsError
+from onhold.errors import OnholdError
 from onhold.notify import pushover
 from onhold.store import Store
 
@@ -66,7 +67,7 @@ OPEN = ("scheduled", "dialing", "in_progress")
 REACHED = ("goal_met", "partial", "needs_owner")
 
 
-class CallError(ValueError):
+class CallError(OnholdError):
     """A refusal to show the caller: the message says what to do instead."""
 
 
