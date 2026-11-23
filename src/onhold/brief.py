@@ -2,16 +2,36 @@
 
 A call never starts without a brief, written for a call the owner asked for
 and approved. The brief is validated strictly here, before any request leaves
-the Worker:
+the Worker, and every problem is reported at once: ``parse_brief`` and
+``check_brief`` raise one ``BriefError`` whose ``issues`` name each failing
+field as a JSON path (``brief.may_share[2]``, ``brief.call_window.start``).
 
 * numbers are E.164, in an allowed country code, and not premium-rate or
   N11 service numbers;
 * every free-text field has a length cap, and lists have item caps;
-* free text may not carry what the agent must never say on a call: Social
-  Security numbers, long digit runs (card, account, licence numbers), street
-  addresses. A brief that needs one is refused with the field name, so the
-  agent drafting it can tell the owner the call needs them instead;
-* the one way a long number reaches the agent is ``keypad_entries``: numbers
+* the call has a class (``call_class``, see ``onhold.classes``), which decides
+  which categories of personal fact the agent may share when asked. The
+  agent's never-share list is ``classes.ALWAYS_FORBIDDEN``, plus each category
+  the class does not allow ("Any date of birth" on a customer_support call),
+  plus the brief's own ``must_not_share``;
+* forbidden in every field and every class, and never echoed back in an
+  issue: a Social Security number (any 9-digit number, with or without
+  separators, standing on its own), a payment card number (13-19 digits that
+  pass the Luhn check) and a bank routing number (9 digits that pass the ABA
+  checksum). Keypad entry values get the card check too;
+* other free text (everything but ``may_share``) may not carry a long digit
+  run (9 or more digits) or a street address;
+* ``may_share`` may carry a street address when the class allows addresses
+  (every v1 class does), and a long number only when the item is labelled as a
+  numbered category the class allows: a callback or phone number, a customer
+  account or order number (customer_support), an insurance member ID
+  (healthcare), a licence plate or a case or permit number (government). The
+  label is matched by keyword, e.g. "Member ID W123456789" or "Callback number
+  512-555-0142";
+* a ``may_share`` item that looks like a category outside the class (a date of
+  birth on a customer_support call) is not refused but warned about
+  (``class_warnings``), so the owner sees it in the draft preview;
+* the other way a long number reaches the agent is ``keypad_entries``: numbers
   the owner approved for this call (an account number, the phone number on the
   account), each labelled, never an SSN-shaped value. The agent keys them into
   the callee's phone menu or reads them to the callee's representative, and
@@ -26,12 +46,21 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, time, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
 
-from onhold.errors import OnholdError
+from onhold import classes
+from onhold.classes import CallClass
+from onhold.errors import OnholdError, issue
 
 E164 = re.compile(r"^\+[1-9]\d{7,14}$")
 # NANP numbers that must never be dialled by an agent: premium rate (900, 976),
@@ -86,14 +115,60 @@ CALL_HOURS_START = time(8, 0)
 CALL_HOURS_END = time(21, 0)
 LATEST_START_NOW = time(21 - MAX_CALL_SECS // 3600, 0)
 
-# Always forbidden, whatever the brief says. Rendered into must_not_share.
+# Always forbidden, whatever the brief or the class says. Rendered into
+# must_not_share ahead of the categories the class does not allow.
 STANDING_DO_NOT_SHARE = (
-    "Any Social Security, driver's licence, passport, account, card, policy or PIN number, "
-    "except the keypad entries the owner approved for this call",
-    "Any date of birth",
-    "Any home, mailing or street address",
-    "Any calendar details, schedules or whereabouts of anyone",
-    "Any payment details; never agree to pay or authorise a charge",
+    *classes.ALWAYS_FORBIDDEN,
+    "Any driver's licence, passport or PIN number, and any other account, ID or policy "
+    "number, except the keypad entries the owner approved for this call and what may_share "
+    "lists",
+)
+
+CHARGE_ON_FILE_ALLOWED = (
+    "Allowed only for the charge the goal is about; never read out or confirm card or "
+    "account digits"
+)
+CHARGE_ON_FILE_NOT_ALLOWED = "Not allowed: never agree to a charge"
+
+# A run of digits standing on its own (not part of a word such as W123456789),
+# allowing one space, dot or hyphen between digits.
+DIGIT_RUN = re.compile(r"(?<![A-Za-z0-9])\d(?:[ .-]?\d)*(?![A-Za-z0-9])")
+NO_PAYMENT_OR_SSN = (
+    "no Social Security, card, bank account or routing numbers; the owner handles anything "
+    "that needs one on their own call"
+)
+SSN_PROBLEM = "looks like a Social Security number; the agent never says one, on any call"
+CARD_PROBLEM = "looks like a payment card number; card and bank details never go in a brief"
+ROUTING_PROBLEM = "looks like a bank routing number; card and bank details never go in a brief"
+
+# Keywords that mark which category a may_share item is. Used to allow a long
+# number in may_share and to warn about items outside the call's class.
+CATEGORY_PATTERNS: dict[str, re.Pattern[str]] = {
+    name: re.compile(pattern, re.IGNORECASE)
+    for name, pattern in {
+        "date_of_birth": r"\b(?:date of birth|birth ?date|birthday|d\.?o\.?b\b|born)",
+        "callback_number": r"\b(?:call ?back|phone|cell|mobile|reach (?:me|the owner))\b",
+        "address": r"\baddress\b",
+        "prescriber": r"\b(?:prescriber|prescribed by|doctor|physician)\b",
+        "pharmacy": r"\b(?:pharmacy|pharmacist)\b",
+        "medication": r"\b(?:medications?|medicines?|prescriptions?|rx|refills?|doses?|"
+        r"dosage|\d+(?:\.\d+)?\s?(?:mg|mcg|ml))\b",
+        "insurance_member_id": r"\b(?:insurance|insurer|member (?:id|number|no\b|#)|"
+        r"subscriber (?:id|number)|group (?:number|no\b|#)|policy (?:number|no\b|#))",
+        "license_plate": r"\b(?:licen[cs]e plates?|plates? (?:number|no\b|#)|tag number|plate)\b",
+        "case_number": r"\b(?:case|permit|docket|citation|application)\s*(?:number|no\b|#|id\b)",
+        "account_number": r"\b(?:account|acct)\b",
+        "order_number": r"\border\s*(?:number|no\b|#|id\b)",
+    }.items()
+}
+# Categories whose value is itself a number, so a long digit run is expected.
+NUMBERED_CATEGORIES = (
+    "callback_number",
+    "insurance_member_id",
+    "license_plate",
+    "case_number",
+    "account_number",
+    "order_number",
 )
 
 Short = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
@@ -129,11 +204,13 @@ def check_number(value: str, allowed_country_codes: tuple[str, ...] = ("1",)) ->
     return value
 
 
-def _check_tz(field: str, value: str) -> str:
+def _check_tz(value: str) -> str:
     try:
         ZoneInfo(value)
     except ZoneInfoNotFoundError, ValueError:
-        raise BriefError(f"{field}: unknown time zone '{value}'") from None
+        raise BriefError(
+            f"unknown time zone '{value}'; use an IANA zone such as America/Chicago"
+        ) from None
     return value
 
 
@@ -141,11 +218,15 @@ def check_call_hours(now: datetime, tz: str) -> None:
     """Refuse a call placed now outside 8:00-20:00 in the callee's time zone."""
     local = now.astimezone(ZoneInfo(tz)).time()
     if not (CALL_HOURS_START <= local <= LATEST_START_NOW):
-        raise BriefError(
+        problem = (
             f"it is {local:%H:%M} in {tz}; calls are placed only "
             f"{CALL_HOURS_START:%H:%M}-{LATEST_START_NOW:%H:%M} callee time (TCPA hours "
             "8 a.m.-9 p.m., less the one-hour call cap). Draft it with a call_window and use "
             "schedule_call."
+        )
+        raise BriefError(
+            problem,
+            [issue("brief.call_window", problem, expected=f"a call_window {WINDOW_RULES}")],
         )
 
 
@@ -157,16 +238,186 @@ def speakable_number(e164: str) -> str:
     return e164
 
 
-def _check_text(field: str, text: str) -> None:
-    if SSN.search(text):
-        raise BriefError(f"{field}: looks like a Social Security number; the agent never says one")
-    if LONG_DIGITS.search(text):
-        raise BriefError(
-            f"{field}: contains a long number (card, account or licence numbers are never "
-            "shared on a call); put phone numbers in to_number or callback_number"
+def luhn_valid(digits: str) -> bool:
+    """The card-number checksum."""
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        n = int(ch)
+        if i % 2:
+            n = n * 2 - 9 if n > 4 else n * 2
+        total += n
+    return total % 10 == 0
+
+
+def aba_valid(digits: str) -> bool:
+    """The ABA routing-number checksum (weights 3, 7, 1)."""
+    if len(digits) != 9:
+        return False
+    return sum(int(d) * w for d, w in zip(digits, (3, 7, 1) * 3, strict=True)) % 10 == 0
+
+
+def forbidden_problems(text: str, ssn: bool = True) -> list[str]:
+    """What ``text`` carries that no brief may: SSN, card or routing numbers.
+
+    With ``ssn=False`` only card numbers are looked for (keypad entry values,
+    where a 9-digit account number the owner approved is expected).
+    """
+    found: list[str] = []
+    if ssn and SSN.search(text):
+        found.append(SSN_PROBLEM)
+    for m in DIGIT_RUN.finditer(text):
+        digits = re.sub(r"\D", "", m.group())
+        if len(digits) == 9 and ssn:
+            problem = (
+                ROUTING_PROBLEM
+                if aba_valid(digits) and not SSN.fullmatch(m.group())
+                else SSN_PROBLEM
+            )
+        elif 13 <= len(digits) <= 19 and luhn_valid(digits):
+            problem = CARD_PROBLEM
+        else:
+            continue
+        if problem not in found:
+            found.append(problem)
+    return found
+
+
+def _forbidden_issues(field: str, text: str, ssn: bool = True) -> list[dict[str, Any]]:
+    # Never echo the value: say what it looked like instead.
+    return [
+        issue(field, p, expected=NO_PAYMENT_OR_SSN, received="(withheld)")
+        for p in forbidden_problems(text, ssn=ssn)
+    ]
+
+
+def item_categories(text: str) -> list[str]:
+    """The categories (``classes.CATEGORIES`` ids) a may_share item looks like."""
+    found = [name for name, pattern in CATEGORY_PATTERNS.items() if pattern.search(text)]
+    if "address" not in found and STREET.search(text):
+        found.append("address")
+    if "callback_number" not in found:
+        for m in DIGIT_RUN.finditer(text):
+            digits = re.sub(r"\D", "", m.group())
+            if len(digits) == 10 or (len(digits) == 11 and digits[0] == "1"):
+                found.append("callback_number")
+                break
+    return [c for c in classes.CATEGORIES if c in found]
+
+
+def _text_issues(field: str, text: str) -> list[dict[str, Any]]:
+    """Free text other than may_share: nothing forbidden, no long numbers, no addresses."""
+    out = _forbidden_issues(field, text)
+    if not out and LONG_DIGITS.search(text):
+        out.append(
+            issue(
+                field,
+                "contains a long number (card, account or licence numbers are never shared "
+                "on a call)",
+                expected="phone numbers in to_number or callback_number; an account number "
+                "the owner approved in keypad_entries; a number the callee may be told in "
+                "may_share, labelled with what it is",
+            )
         )
     if STREET.search(text):
-        raise BriefError(f"{field}: looks like a street address; the agent never shares one")
+        out.append(
+            issue(
+                field,
+                "looks like a street address; the agent shares an address only from may_share",
+                expected="the address, if the owner said the agent may give it, as a "
+                "may_share item",
+            )
+        )
+    return out
+
+
+def _may_share_issues(field: str, text: str, call_class: str) -> list[dict[str, Any]]:
+    """A may_share item: nothing forbidden; addresses and labelled numbers the class allows."""
+    out = _forbidden_issues(field, text)
+    allowed = classes.CLASS_CATEGORIES[call_class]
+    cats = item_categories(text)
+    if not out and LONG_DIGITS.search(text):
+        if not any(c in allowed and c in NUMBERED_CATEGORIES for c in cats):
+            numbered = [classes.CATEGORIES[c] for c in allowed if c in NUMBERED_CATEGORIES]
+            out.append(
+                issue(
+                    field,
+                    f"contains a long number that isn't labelled as something a {call_class} "
+                    "call may share",
+                    expected=f"a number labelled as one of: {', '.join(numbered)} (e.g. "
+                    "'Callback number 512-555-0100'); or an approved account number in "
+                    "keypad_entries",
+                )
+            )
+    if STREET.search(text) and "address" not in allowed:
+        out.append(
+            issue(
+                field,
+                f"looks like a street address, which a {call_class} call never shares",
+                expected=f"what a {call_class} call may share: "
+                f"{classes.shareable_text(call_class)}",
+            )
+        )
+    return out
+
+
+TEXT_FIELDS = ("callee_name", "topic", "goal", "give_up_when")
+TEXT_LISTS = ("questions", "must_not_share")
+
+
+def _class_of(data: dict) -> str:
+    c = data.get("call_class")
+    return c if c in classes.CALL_CLASSES else classes.DEFAULT_CLASS
+
+
+def content_issues(data: dict) -> list[dict[str, Any]]:
+    """Content checks over a brief as a dict, so they run even when the schema fails."""
+    out: list[dict[str, Any]] = []
+    call_class = _class_of(data)
+
+    def items(name: str) -> list[tuple[int, Any]]:
+        v = data.get(name)
+        return list(enumerate(v)) if isinstance(v, list) else []
+
+    for name in TEXT_FIELDS:
+        if isinstance(data.get(name), str):
+            out += _text_issues(f"brief.{name}", data[name])
+    for name in TEXT_LISTS:
+        for i, v in items(name):
+            if isinstance(v, str):
+                out += _text_issues(f"brief.{name}[{i}]", v)
+    for i, v in items("may_share"):
+        if isinstance(v, str):
+            out += _may_share_issues(f"brief.may_share[{i}]", v, call_class)
+    for i, step in items("menu_path"):
+        if isinstance(step, dict) and isinstance(step.get("option"), str):
+            out += _text_issues(f"brief.menu_path[{i}].option", step["option"])
+    for i, entry in items("keypad_entries"):
+        if not isinstance(entry, dict):
+            continue
+        if isinstance(entry.get("label"), str):
+            out += _text_issues(f"brief.keypad_entries[{i}].label", entry["label"])
+        if isinstance(entry.get("value"), str):
+            out += _forbidden_issues(f"brief.keypad_entries[{i}].value", entry["value"], ssn=False)
+    return out
+
+
+def _raise(issues: list[dict[str, Any]]) -> None:
+    if not issues:
+        return
+    lines = [f"{i['field']}: {i['problem']}" for i in issues]
+    if len(lines) == 1:
+        raise BriefError(lines[0], issues)
+    raise BriefError(f"{len(lines)} problems with the brief: " + "; ".join(lines), issues)
+
+
+WINDOW_TIME_FORMAT = (
+    "the callee's local wall time, YYYY-MM-DDTHH:MM with no offset, e.g. 2026-11-06T09:00"
+)
+WINDOW_RULES = (
+    f"in the future, within {CALL_HOURS_START:%H:%M}-{LATEST_START_NOW:%H:%M} on one day in "
+    f"the callee's time zone, at most {MAX_WINDOW_HOURS} hours long, starting within "
+    f"{MAX_SCHEDULE_DAYS} days"
+)
 
 
 class CallWindow(BaseModel):
@@ -178,16 +429,23 @@ class CallWindow(BaseModel):
         str, Field(description="IANA time zone of the business, e.g. America/Chicago")
     ]
     start: Annotated[
-        datetime, Field(description="Window start, local wall time, e.g. 2026-11-06T09:00")
+        datetime,
+        Field(
+            description=f"Window start: {WINDOW_TIME_FORMAT}. The window must be {WINDOW_RULES}."
+        ),
     ]
     end: Annotated[
-        datetime, Field(description="Window end, local wall time, e.g. 2026-11-06T16:30")
+        datetime,
+        Field(
+            description="Window end: the callee's local wall time in the same format, e.g. "
+            f"2026-11-06T12:00, on the same day as start. The window must be {WINDOW_RULES}."
+        ),
     ]
 
     @field_validator("timezone")
     @classmethod
     def _tz(cls, v: str) -> str:
-        return _check_tz("call_window.timezone", v)
+        return _check_tz(v)
 
     def bounds_utc(self) -> tuple[datetime, datetime]:
         tz = ZoneInfo(self.timezone)
@@ -195,31 +453,51 @@ class CallWindow(BaseModel):
         end = self.end if self.end.tzinfo else self.end.replace(tzinfo=tz)
         return start.astimezone(UTC), end.astimezone(UTC)
 
-    def dial_time(self, now: datetime) -> datetime:
-        """The UTC moment to dial: the window start, or shortly after now if inside it."""
+    def issues(self, now: datetime, prefix: str = "brief.call_window") -> list[dict[str, Any]]:
+        """Every problem with the window, each naming ``start`` or ``end``."""
+        tz = ZoneInfo(self.timezone)
         start, end = self.bounds_utc()
+        local_start, local_end = start.astimezone(tz), end.astimezone(tz)
+        shown = {"start": f"{local_start:%Y-%m-%dT%H:%M}", "end": f"{local_end:%Y-%m-%dT%H:%M}"}
+
+        def bad(name: str, problem: str, expected: str) -> dict[str, Any]:
+            return issue(f"{prefix}.{name}", problem, expected=expected, received=shown[name])
+
         if end <= start:
-            raise BriefError("call_window: end must be after start")
+            return [bad("end", "end must be after start", "a time later than start")]
+        out = []
         if end - start > timedelta(hours=MAX_WINDOW_HOURS):
-            raise BriefError(f"call_window: at most {MAX_WINDOW_HOURS} hours long")
-        local_start = start.astimezone(ZoneInfo(self.timezone))
-        local_end = end.astimezone(ZoneInfo(self.timezone))
-        if (
-            local_start.date() != local_end.date()
-            or local_start.time() < CALL_HOURS_START
-            or local_end.time() > LATEST_START_NOW
-        ):
-            raise BriefError(
-                f"call_window: must lie within {CALL_HOURS_START:%H:%M}-"
-                f"{LATEST_START_NOW:%H:%M} on one day in the callee's time zone (TCPA calling "
-                "hours, less the one-hour call cap)"
+            out.append(
+                bad("end", f"at most {MAX_WINDOW_HOURS} hours long", "an end closer to start")
+            )
+        tcpa = (
+            f"must lie within {CALL_HOURS_START:%H:%M}-{LATEST_START_NOW:%H:%M} on one day in "
+            "the callee's time zone (TCPA calling hours, less the one-hour call cap)"
+        )
+        if local_start.time() < CALL_HOURS_START:
+            out.append(bad("start", tcpa, f"{CALL_HOURS_START:%H:%M} or later, local time"))
+        if local_start.date() != local_end.date() or local_end.time() > LATEST_START_NOW:
+            out.append(
+                bad("end", tcpa, f"{LATEST_START_NOW:%H:%M} or earlier, the same day as start")
             )
         if start - now > timedelta(days=MAX_SCHEDULE_DAYS):
-            raise BriefError(f"call_window: must start within {MAX_SCHEDULE_DAYS} days")
-        dial = max(start, now + MIN_LEAD)
-        if end - dial < MIN_WINDOW_LEFT:
-            raise BriefError("call_window: the window has ended or is about to end")
-        return dial
+            out.append(bad("start", f"must start within {MAX_SCHEDULE_DAYS} days", "a nearer date"))
+        if end - max(start, now + MIN_LEAD) < MIN_WINDOW_LEFT:
+            out.append(
+                bad(
+                    "end",
+                    "the window has ended or is about to end",
+                    f"an end at least {MIN_WINDOW_LEFT.seconds // 60} minutes from now; it is "
+                    f"{now.astimezone(tz):%Y-%m-%dT%H:%M} in {self.timezone}",
+                )
+            )
+        return out
+
+    def dial_time(self, now: datetime) -> datetime:
+        """The UTC moment to dial: the window start, or shortly after now if inside it."""
+        _raise(self.issues(now))
+        start, _ = self.bounds_utc()
+        return max(start, now + MIN_LEAD)
 
     def contains(self, now: datetime) -> bool:
         start, end = self.bounds_utc()
@@ -280,6 +558,48 @@ class KeypadEntry(BaseModel):
         return re.sub(r"\D", "", self.value)
 
 
+CALL_CLASS_DESCRIPTION = (
+    "Who is being called, which decides what kinds of personal fact the agent may share when "
+    "asked (only items that are also in may_share). One of: "
+    + "; ".join(classes.describe(c) for c in classes.CALL_CLASSES)
+    + f". Default {classes.DEFAULT_CLASS}. Never shared on any call: Social Security numbers, "
+    "card or bank details, or changes to a payment method."
+)
+
+
+def must_not_share_list(brief: CallBrief) -> list[str]:
+    """The standing list, then each category the class does not allow, then the brief's own."""
+    allowed = classes.CLASS_CATEGORIES[brief.call_class]
+    barred = [f"Any {classes.CATEGORIES[c]}" for c in classes.CATEGORIES if c not in allowed]
+    return [*STANDING_DO_NOT_SHARE, *barred, *brief.must_not_share]
+
+
+def class_warnings(brief: CallBrief) -> list[dict[str, Any]]:
+    """may_share items that look like a category the call's class does not share.
+
+    Not a refusal: the owner sees them in the draft preview. The agent treats
+    that category as never-share, and the safety check fails a call that shares it.
+    """
+    allowed = classes.CLASS_CATEGORIES[brief.call_class]
+    out = []
+    for i, item in enumerate(brief.may_share):
+        for c in item_categories(item):
+            if c in allowed:
+                continue
+            out.append(
+                issue(
+                    f"brief.may_share[{i}]",
+                    f"looks like a {classes.CATEGORIES[c]}, which a {brief.call_class} call "
+                    "does not share; the agent will not say it, and the safety check fails "
+                    "the call if it does",
+                    expected=f"what a {brief.call_class} call may share: "
+                    f"{classes.shareable_text(brief.call_class)}; or a call_class that allows "
+                    f"a {classes.CATEGORIES[c]}",
+                )
+            )
+    return out
+
+
 class CallBrief(BaseModel):
     """What the owner's agent writes before any call. Every field is shown to the voice agent."""
 
@@ -288,7 +608,13 @@ class CallBrief(BaseModel):
     callee_name: Annotated[
         Short, Field(description="Who is being called, e.g. 'Travis County Tax Office'")
     ]
-    to_number: Annotated[str, Field(description="Number to dial, E.164, e.g. +15125550123")]
+    to_number: Annotated[
+        str, Field(description="Number to dial, E.164 (+ and country code), e.g. +15125550123")
+    ]
+    call_class: Annotated[
+        CallClass,
+        Field(description=CALL_CLASS_DESCRIPTION),
+    ] = classes.DEFAULT_CLASS
     topic: Annotated[
         Short,
         Field(
@@ -301,7 +627,15 @@ class CallBrief(BaseModel):
     ] = []
     may_share: Annotated[
         list[Item],
-        Field(max_length=10, description="Facts the agent may share if asked (max 10)"),
+        Field(
+            max_length=10,
+            description="Facts the agent may share if asked, each written as the agent would "
+            "say it, e.g. 'Date of birth: March 3, 1980' (max 10). Only the owner's own words "
+            "about this call, and only kinds of fact the call_class allows. A street address "
+            "may go here; a long number only when labelled as a kind the class allows, e.g. "
+            "'Callback number 512-555-0100' or 'Insurance member ID W123456789'. Never a "
+            "Social Security, card, bank account or routing number.",
+        ),
     ] = []
     must_not_share: Annotated[
         list[Item],
@@ -339,7 +673,8 @@ class CallBrief(BaseModel):
     callback_number: Annotated[
         str | None,
         Field(
-            description="Number the callee may call back on (E.164), only if the owner gave one; "
+            description="Number the callee may call back on (E.164, e.g. +15125550100), only "
+            "if the owner gave one; "
             "otherwise the configured callback number is offered"
         ),
     ] = None
@@ -350,7 +685,25 @@ class CallBrief(BaseModel):
             "call_window is given (TCPA calling hours)."
         ),
     ] = None
-    call_window: CallWindow | None = None
+    call_window: Annotated[
+        CallWindow | None,
+        Field(
+            description="When a scheduled call may be placed (use schedule_call), e.g. "
+            '{"timezone": "America/Chicago", "start": "2026-11-06T09:00", "end": '
+            '"2026-11-06T12:00"}. start and end are the callee\'s local wall time, no offset; '
+            f"the window must be {WINDOW_RULES}. Omit it to call now with place_call."
+        ),
+    ] = None
+    allow_charge_on_file: Annotated[
+        bool,
+        Field(
+            description="True only if the owner said the agent may agree to a charge to the "
+            "card or account the callee already has on file, for the charge the goal is about "
+            "(e.g. a refill copay or a fee the goal names). The agent never reads out, gives "
+            "or confirms card or account digits, and never adds or changes a payment method. "
+            "Default false: the agent never agrees to any charge."
+        ),
+    ] = False
     reference: Annotated[
         str | None,
         StringConstraints(strip_whitespace=True, max_length=120),
@@ -368,22 +721,15 @@ class CallBrief(BaseModel):
     @field_validator("callee_timezone")
     @classmethod
     def _callee_tz(cls, v: str | None) -> str | None:
-        return None if v is None else _check_tz("callee_timezone", v)
+        return None if v is None else _check_tz(v)
 
     @property
     def timezone(self) -> str | None:
         return self.call_window.timezone if self.call_window else self.callee_timezone
 
     def check_content(self) -> None:
-        for name in ("callee_name", "topic", "goal", "give_up_when"):
-            _check_text(name, getattr(self, name))
-        for name in ("questions", "may_share", "must_not_share"):
-            for i, item in enumerate(getattr(self, name)):
-                _check_text(f"{name}[{i}]", item)
-        for i, step in enumerate(self.menu_path):
-            _check_text(f"menu_path[{i}].option", step.option)
-        for i, entry in enumerate(self.keypad_entries):
-            _check_text(f"keypad_entries[{i}].label", entry.label)
+        """Refuse forbidden or misplaced content (raises one BriefError with every issue)."""
+        _raise(content_issues(self.model_dump(mode="json")))
 
 
 def _numbered(items: list[str] | tuple[str, ...], empty: str) -> str:
@@ -434,9 +780,7 @@ def to_dynamic_variables(
         "call_goal": brief.goal,
         "questions": _numbered(brief.questions, "(no specific questions)"),
         "may_share": _numbered(brief.may_share, "(nothing beyond the topic and goal)"),
-        "must_not_share": _numbered(
-            [*STANDING_DO_NOT_SHARE, *brief.must_not_share], "(standing list only)"
-        ),
+        "must_not_share": _numbered(must_not_share_list(brief), "(standing list only)"),
         "give_up_when": brief.give_up_when,
         "menu_path": menu_path_text(brief.menu_path),
         "keypad_entries": keypad_entries_text(brief.keypad_entries),
@@ -446,34 +790,127 @@ def to_dynamic_variables(
         "assistant_number": speakable_number(assistant_number),
         "call_window": window,
         "onhold_call_id": call_id,
+        "call_class": brief.call_class,
+        "class_may_share": classes.shareable_text(brief.call_class),
+        "charge_on_file": (
+            CHARGE_ON_FILE_ALLOWED if brief.allow_charge_on_file else CHARGE_ON_FILE_NOT_ALLOWED
+        ),
     }
 
 
-def parse_brief(data: dict, now: datetime | None = None) -> CallBrief:
-    """Validate a brief dict, raising BriefError with a readable reason."""
-    from pydantic import ValidationError
+_EXPECTED = {
+    "missing": "a value",
+    "extra_forbidden": "only the documented brief fields",
+    "string_too_short": "non-empty text",
+    "bool_type": "true or false",
+    "bool_parsing": "true or false",
+    "list_type": "a list",
+    "string_type": "text",
+    "model_type": "an object",
+    "datetime_type": WINDOW_TIME_FORMAT,
+    "datetime_parsing": WINDOW_TIME_FORMAT,
+    "datetime_from_date_parsing": WINDOW_TIME_FORMAT,
+}
 
+
+# What a field takes, for errors whose type alone doesn't say (validators' ValueErrors).
+_FIELD_EXPECTED = {
+    "timezone": "an IANA zone such as America/Chicago",
+    "callee_timezone": "an IANA zone such as America/Chicago",
+    "to_number": "an E.164 number in the US or Canada, e.g. +15125550123",
+    "callback_number": "an E.164 number in the US or Canada, e.g. +15125550123",
+    "value": "4-25 digits, optionally grouped with spaces or hyphens; never an SSN",
+    "press": "1-4 of 0-9, * and #",
+}
+
+
+def _path(loc: tuple) -> str:
+    out = "brief"
+    for part in loc:
+        out += f"[{part}]" if isinstance(part, int) else f".{part}"
+    return out
+
+
+def _safe_received(value: Any) -> Any:
+    if isinstance(value, bool | int | float):
+        return value
+    if isinstance(value, str) and len(value) <= 80 and not forbidden_problems(value):
+        return value
+    return None
+
+
+def validation_issues(e: ValidationError) -> list[dict[str, Any]]:
+    """One readable issue per failing field of a pydantic error."""
+    out = []
+    for err in e.errors():
+        kind, ctx = err["type"], err.get("ctx") or {}
+        last = err["loc"][-1] if err["loc"] else ""
+        expected = _EXPECTED.get(kind) or _FIELD_EXPECTED.get(str(last))
+        if kind == "string_too_long":
+            expected = f"at most {ctx.get('max_length')} characters"
+        elif kind == "too_long":
+            expected = f"at most {ctx.get('max_length')} items"
+        elif kind == "literal_error":
+            expected = f"one of {ctx.get('expected')}"
+        received = None if kind in ("missing", "extra_forbidden") else err.get("input")
+        out.append(
+            issue(
+                _path(err["loc"]),
+                err["msg"].removeprefix("Value error, "),
+                expected=expected,
+                received=_safe_received(received),
+            )
+        )
+    return out
+
+
+def parse_brief(data: dict, now: datetime | None = None) -> CallBrief:
+    """Validate a brief dict, raising one BriefError that lists every issue found."""
     try:
-        brief = CallBrief.model_validate(data)
+        return check_brief(CallBrief.model_validate(data), now)
     except ValidationError as e:
-        parts = []
-        for err in e.errors():
-            loc = ".".join(str(p) for p in err["loc"]) or "brief"
-            msg = err["msg"].removeprefix("Value error, ")
-            parts.append(f"{loc}: {msg}")
-        raise BriefError("; ".join(parts)) from None
-    return check_brief(brief, now)
+        found = validation_issues(e)
+    if isinstance(data, dict):
+        found += content_issues(data)
+        # The window's own rules, when the window itself parsed.
+        if isinstance(data.get("call_window"), dict) and not any(
+            i["field"].startswith("brief.call_window") for i in found
+        ):
+            try:
+                found += CallWindow.model_validate(data["call_window"]).issues(
+                    now or datetime.now(UTC)
+                )
+            except ValidationError:
+                pass
+    _raise(found)
+    raise AssertionError("unreachable: a ValidationError always has an issue")
 
 
 def check_brief(brief: CallBrief, now: datetime | None = None) -> CallBrief:
-    """Checks beyond the schema: content rules, numbers, the window."""
-    brief.check_content()
+    """Checks beyond the schema: content rules, numbers, the window. Collects them all."""
+    found = content_issues(brief.model_dump(mode="json"))
     if brief.callback_number and brief.callback_number == brief.to_number:
-        raise BriefError("callback_number: must differ from to_number")
+        found.append(
+            issue("brief.callback_number", "must differ from to_number", expected="another number")
+        )
     if brief.call_window:
         if brief.callee_timezone and brief.callee_timezone != brief.call_window.timezone:
-            raise BriefError("callee_timezone: must match call_window.timezone")
-        brief.call_window.dial_time(now or datetime.now(UTC))
+            found.append(
+                issue(
+                    "brief.callee_timezone",
+                    "must match call_window.timezone",
+                    expected=brief.call_window.timezone,
+                    received=brief.callee_timezone,
+                )
+            )
+        found += brief.call_window.issues(now or datetime.now(UTC))
     elif not brief.callee_timezone:
-        raise BriefError("callee_timezone: required (IANA zone of the business) for TCPA hours")
+        found.append(
+            issue(
+                "brief.callee_timezone",
+                "required (IANA zone of the business) for TCPA hours",
+                expected="an IANA zone such as America/Chicago, or a call_window",
+            )
+        )
+    _raise(found)
     return brief
