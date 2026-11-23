@@ -92,6 +92,8 @@ QA_LINE = re.compile(
 # A question the agent asked matches a brief question when it has at least this
 # share of the brief question's content words (see ``similarity``).
 MATCH_THRESHOLD = 0.6
+# Fewest content words two questions must share to match at all.
+MIN_SHARED = 2
 # A shorter word this long or longer matches a longer one it starts ("refill",
 # "refills"; "pick", "pickup").
 PREFIX_MIN = 4
@@ -299,20 +301,25 @@ def _found(words: list[str], other: list[str]) -> int:
 
 
 def similarity(question: str, asked: str) -> float:
-    """How much of a brief question the agent's question covers, 0 to 1.
+    """How well the agent's question matches a brief question, 0 to 1.
 
-    Both are lowercased and stripped of stopwords. The score is the share of
-    the brief question's content words that the asked question has: the same
-    word, or one starting with the other when the shorter has at least
-    ``PREFIX_MIN`` letters ("renew" and "renewed"). Words the agent added, such
-    as the owner's name, do not count against it.
+    Both are lowercased and stripped of stopwords. Two words match when they
+    are the same, or one starts with the other and the shorter has at least
+    ``PREFIX_MIN`` letters ("renew" and "renewed"). The score is the larger of
+    two shares: the brief question's words the asked one has (the agent added
+    the owner's name), and the asked question's words the brief one has (the
+    agent left out names, a dose or a place). Below ``MIN_SHARED`` shared
+    words the score is 0, so one common word ("refill") never makes a match.
     """
     wq, wa = _content_words(question), _content_words(asked)
-    if not wq:
+    if not wq or not wa:
         # Only stopwords ("Who is it?"): the same words or nothing.
         same = re.findall(r"[a-z0-9]+", question.lower()) == re.findall(r"[a-z0-9]+", asked.lower())
         return 1.0 if same else 0.0
-    return _found(wq, wa) / len(wq)
+    found_q, found_a = _found(wq, wa), _found(wa, wq)
+    if min(found_q, found_a) < min(MIN_SHARED, len(wq), len(wa)):
+        return 0.0
+    return max(found_q / len(wq), found_a / len(wa))
 
 
 def _dice(a: str, b: str) -> float:

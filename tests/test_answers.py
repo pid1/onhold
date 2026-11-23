@@ -118,3 +118,28 @@ def test_empty_qa_with_questions_is_not_goal_met():
     fields = report.from_conversation(collected(qa=""), QUESTIONS, 3600)
     assert fields["outcome"] == "partial"
     assert "none of the 3 questions was answered" in fields["details_json"]["checks"][0]
+
+
+def test_a_question_asked_without_the_names_still_matches():
+    """The agent drops names, the dose and the place; the answer still lands."""
+    questions = [
+        "Has Pat Example approved and sent the Examplol 5 mg prescription to the "
+        "Main Street pharmacy in Springfield?",
+        "When should he expect it at the pharmacy?",
+    ]
+    qa = (
+        "Q: Has the prescription been approved and sent to the pharmacy? || A: Still pending.\n"
+        "Q: When can he expect it at the pharmacy? || A: Not sure."
+    )
+    answers, other = report.match_answers(questions, report.parse_qa(qa))
+    assert [a["answer"] for a in answers] == ["Still pending.", "Not sure."]
+    assert other == []
+
+
+def test_one_shared_word_is_not_a_match():
+    answers, other = report.match_answers(
+        ["Is my refill ready?"],
+        report.parse_qa("Q: How much does the refill cost? || A: Ten dollars."),
+    )
+    assert answers[0]["answered"] is False
+    assert other and other[0]["answer"] == "Ten dollars."
