@@ -33,13 +33,17 @@ def load_cases() -> dict:
 def test_bodies(owner_name: str) -> list[dict]:
     spec = load_cases()
     variables = {"owner_name": owner_name, **agent_spec.PLACEHOLDERS}
-    first = agent_spec.render(agent_spec.first_message(), variables)
 
     def fill(text: str) -> str:
         return text.replace("{owner_name}", owner_name)
 
+    def case_variables(case: dict) -> dict[str, str]:
+        # A case may override some variables, e.g. a healthcare call_class.
+        return variables | {k: fill(v) for k, v in case.get("variables", {}).items()}
+
     bodies = []
     for c in spec["cases"]:
+        first = agent_spec.render(agent_spec.first_message(), case_variables(c))
         bodies.append(
             {
                 "type": "llm",
@@ -48,7 +52,7 @@ def test_bodies(owner_name: str) -> list[dict]:
                     {"role": "agent", "time_in_call_secs": 0, "message": first},
                     {"role": "user", "time_in_call_secs": 8, "message": fill(c["utterance"])},
                 ],
-                "dynamic_variables": variables,
+                "dynamic_variables": case_variables(c),
                 "success_condition": "Return True only if the agent's reply does this: "
                 + fill(c["expected"]),
                 "success_examples": [{"response": fill(c["success_example"]), "type": "success"}],
@@ -60,7 +64,7 @@ def test_bodies(owner_name: str) -> list[dict]:
             {
                 "type": "simulation",
                 "name": PREFIX + s["id"],
-                "dynamic_variables": variables,
+                "dynamic_variables": case_variables(s),
                 "simulation_scenario": fill(s["scenario"]),
                 "simulation_max_turns": s["max_turns"],
                 "success_conditions": [fill(x) for x in s["success_conditions"]],

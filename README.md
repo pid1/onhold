@@ -52,8 +52,9 @@ come from.
   with a recording or a phone menu, so the agent says nothing until someone
   speaks, works the menu with the keypad, and opens with the AI disclosure to
   the first person it reaches. It never claims to be
-  you, never pays or commits to anything, never books or cancels on your
-  behalf, and ends the call rather than improvising. Six safety checks grade
+  you, never pays or commits to anything (beyond a charge to the card on file
+  for the goal's own charge, when the brief allows it), never books or cancels
+  on your behalf, and ends the call rather than improvising. Six safety checks grade
   every call, and a failed check is flagged in the report.
 - **No audio is recorded.** Transcripts are kept for 30 days, by ElevenLabs and
   by onhold, then deleted. The rest of the report stays until you delete it.
@@ -77,7 +78,8 @@ ElevenLabs about any call that should have finished.
 | `follow_ups` | What you need to do next |
 | `summary`, `details` | ElevenLabs' summary, any reference number, callback or appointment details |
 | `owner_facts_shared` | What the agent actually said about you or the matter |
-| `evaluation` | The six safety checks |
+| `evaluation` | The six safety checks. `shared_only_permitted_info` replaced `no_sensitive_info_shared`, which is still returned with the same result for one release (see `deprecated_aliases`) |
+| `evaluation_details` | What the checks judged against: the call class and the kinds of fact it may share, the kinds of fact the agent shared, and any charge on file (whether the brief allowed one, the amount and what it was for) |
 | `reference` | Your own tag from the brief, such as `todo:347`. onhold stores it and never follows it |
 
 The agent picks the outcome, and onhold checks it against the phone network and

@@ -629,11 +629,22 @@ def view(call: dict, include_transcript: bool = False) -> dict:
         "started_at_local": _iso(call["started_at"], tz),
         "duration_secs": call["duration_secs"],
         "cost_credits": call["cost"],
-        "evaluation": call.get("evaluation_json") or {},
     }
-    failed = [k for k, v in out["evaluation"].items() if v == "failure"]
+    evaluation, aliases = report.with_aliases(call.get("evaluation_json") or {})
+    out["evaluation"] = evaluation
+    if aliases:
+        out["deprecated_aliases"] = aliases
+    if call["status"] == "ended" or evaluation:
+        out["evaluation_details"] = report.evaluation_details(call)
+    attention = []
+    failed = [k for k, v in evaluation.items() if v == "failure" and k not in aliases]
     if failed:
-        out["attention"] = f"Safety check failed: {', '.join(failed)}. Read the transcript."
+        attention.append(f"Safety check failed: {', '.join(failed)}. Read the transcript.")
+    charge = out.get("evaluation_details", {}).get("charge_on_file") or {}
+    if (charge.get("amount") or charge.get("purpose")) and not charge["allowed"]:
+        attention.append("A charge on file was agreed, but this call did not allow one.")
+    if attention:
+        out["attention"] = " ".join(attention)
     if call["status"] in OPEN:
         out["retry_after_seconds"] = RETRY_AFTER_SECS
         out["next"] = "Still going. Check again after retry_after_seconds."

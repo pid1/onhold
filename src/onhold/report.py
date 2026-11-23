@@ -23,6 +23,8 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
+from onhold import classes
+
 OUTCOMES = ("goal_met", "partial", "needs_owner", "not_reached")
 REASONS = (
     "no_answer",
@@ -53,6 +55,10 @@ MAX_MENU_STEPS = 10
 MAX_OPTION_CHARS = 80
 # What an option note may not carry: any run of 5 or more digits.
 OPTION_DIGITS = re.compile(r"(?:\d[ -]?){5,}")
+# Deprecated evaluation criterion ids -> the criterion that replaced them. Responses
+# carry the old id too, with the new one's result, for one release.
+CRITERION_ALIASES = {"no_sensitive_info_shared": "shared_only_permitted_info"}
+MAX_SHARED_ITEMS = 20
 # Twilio's failure reasons as ElevenLabs relays them.
 FAILURE_REASONS = {"busy": "busy", "no-answer": "no_answer", "no_answer": "no_answer"}
 
@@ -129,6 +135,14 @@ def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) 
         answers.append({"question": q, "answered": answered, "answer": text if answered else None})
 
     details = {k: data.get(k) for k in DETAIL_FIELDS if data.get(k) not in (None, "")}
+    shared_items = [i for i in _lines(data.get("shared_items")) if i.lower() not in NOT_ANSWERED]
+    if shared_items:
+        details["shared_items"] = shared_items[:MAX_SHARED_ITEMS]
+    charge = {k: str(data.get(f"charge_on_file_{k}") or "").strip() for k in ("amount", "purpose")}
+    if any(v.lower() not in NOT_ANSWERED for v in charge.values()):
+        details["charge_on_file"] = {
+            k: (v if v.lower() not in NOT_ANSWERED else None) for k, v in charge.items()
+        }
     details["ended_because"] = termination or None
     if checks:
         details["checks"] = checks
@@ -201,6 +215,56 @@ def menu_presses(conv: dict, entries: Iterable[str] = ()) -> list[dict] | None:
     if len(steps) > MAX_MENU_STEPS:
         return None
     return steps
+
+
+def shared_kind(item: str) -> str:
+    """The class-table name for one shared item ('date of birth'), else 'other'."""
+    text = " ".join(item.lower().replace("_", " ").split())
+    for cid, label in classes.CATEGORIES.items():
+        if text in (label.lower(), cid.replace("_", " ")) or text.startswith(f"{label.lower()}:"):
+            return label
+    return "other"
+
+
+def evaluation_details(call: dict) -> dict:
+    """What the safety evaluation judged against: the class, what was shared, any charge.
+
+    ``call_class`` and ``allowed`` come from the brief (an old brief has neither:
+    customer_support, not allowed). ``shared_items`` are kinds from the class
+    table, never values; the agent's own words stay in the report's details.
+    """
+    b = call.get("brief_json") or {}
+    details = call.get("details_json") or {}
+    call_class = b.get("call_class") or classes.DEFAULT_CLASS
+    out: dict[str, Any] = {
+        "call_class": call_class,
+        "class_may_share": classes.shareable(call_class)
+        if call_class in classes.CLASS_CATEGORIES
+        else [],
+        "shared_items": list(
+            dict.fromkeys(shared_kind(i) for i in details.get("shared_items") or [])
+        ),
+    }
+    allowed = bool(b.get("allow_charge_on_file", False))
+    charge = details.get("charge_on_file")
+    if allowed or charge:
+        out["charge_on_file"] = {
+            "allowed": allowed,
+            "amount": _option((charge or {}).get("amount")) or None,
+            "purpose": _option((charge or {}).get("purpose")) or None,
+        }
+    return out
+
+
+def with_aliases(evaluation: dict) -> tuple[dict, dict]:
+    """``evaluation`` plus each deprecated id that has a replacement result, and the aliases."""
+    out = dict(evaluation)
+    aliases = {}
+    for old, new in CRITERION_ALIASES.items():
+        if new in out and old not in out:
+            out[old] = out[new]
+            aliases[old] = f"deprecated: same as {new}; removed in the next release"
+    return out, aliases
 
 
 def from_failure(data: dict) -> dict:

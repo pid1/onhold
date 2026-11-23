@@ -11,6 +11,8 @@ import json
 import re
 from pathlib import Path
 
+from onhold import classes
+
 AGENT_DIR = Path(__file__).resolve().parent / "agent"
 VARIABLE = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
 
@@ -22,7 +24,26 @@ PLACEHOLDERS = {
     "call_goal": "Find out what is needed to renew a licence plate registration by mail.",
     "questions": "1. Can the renewal be done by mail?\n2. What documents are needed?",
     "may_share": "1. The vehicle is a passenger car registered in this county.",
-    "must_not_share": "1. Any account, licence or card number\n2. Any address",
+    "must_not_share": "\n".join(
+        f"{i}. {item}"
+        for i, item in enumerate(
+            (
+                *classes.ALWAYS_FORBIDDEN,
+                *(
+                    f"Any {label}"
+                    for c, label in classes.CATEGORIES.items()
+                    if c not in classes.CLASS_CATEGORIES["government"]
+                ),
+            ),
+            1,
+        )
+    ),
+    "call_class": "government",
+    "class_may_share": classes.shareable_text("government"),
+    "charge_on_file": (
+        "not allowed. If they ask to charge the card or account on file, note the amount and "
+        "what it is for, and say the owner will decide and follow up."
+    ),
     "give_up_when": "they need the owner in person or need an ID number",
     "menu_path": "1. Press 2 (vehicle registration)\n2. Press 0 (speak to a person)",
     "keypad_entries": "(none: key in or read out no account, ID or phone numbers)",
