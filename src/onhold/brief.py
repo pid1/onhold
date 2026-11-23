@@ -14,13 +14,24 @@ field as a JSON path (``brief.may_share[2]``, ``brief.call_window.start``).
   agent's never-share list is ``classes.ALWAYS_FORBIDDEN``, plus each category
   the class does not allow ("Any date of birth" on a customer_support call),
   plus the brief's own ``must_not_share``;
-* forbidden in every field and every class, and never echoed back in an
-  issue: a Social Security number (any 9-digit number, with or without
-  separators, standing on its own), a payment card number (13-19 digits that
-  pass the Luhn check) and a bank routing number (9 digits that pass the ABA
-  checksum). Keypad entry values get the card check too;
+* digits are read as runs of groups with any separators between them (any
+  whitespace, hyphens and dashes of every width, dots, slashes), so spacing
+  can't hide a number; dates and clock times ("2026-11-23 09:05") are their
+  own tokens and never part of a run;
+* forbidden in every field and every class, and never echoed back in an issue
+  or message (rejected values are described, not repeated):
+  - a payment card number: any span of whole digit groups 13-19 digits long
+    that passes the Luhn check, so a card followed by its expiry is caught;
+  - a bank routing number: any 9-digit span of whole groups that passes the
+    ABA checksum;
+  - a Social Security number: any 3-2-4 grouped number, and any other 9-digit
+    run standing on its own, except a ZIP+4 (5-4) and a 9-digit number in a
+    ``may_share`` item labelled as a numbered category the class allows
+    (account, order, member ID, case number) and not as an SSN, tax ID, bank
+    or card. Keypad entry values skip only this bare-9-digit rule;
 * other free text (everything but ``may_share``) may not carry a long digit
-  run (9 or more digits) or a street address;
+  run (9 or more digits, even inside a word; a ZIP+4 doesn't count) or a
+  street address;
 * ``may_share`` may carry a street address when the class allows addresses
   (every v1 class does), and a long number only when the item is labelled as a
   numbered category the class allows: a callback or phone number, a customer
@@ -91,8 +102,9 @@ NANP_NON_US_CA = {
     "869",
     "876",
 }
-SSN = re.compile(r"\b\d{3}[- ]\d{2}[- ]\d{4}\b")
-LONG_DIGITS = re.compile(r"(?:\d[ -]?){9,}")
+# Separators people put between digit groups: any whitespace, hyphens and dashes
+# of every width, dots and slashes, in any number.
+SEP = r"[\s\-\u2010-\u2015\u2212./]+"
 # A number followed by a dose or quantity unit ("1 mg weekly per Dr Lee") is not
 # a house number.
 STREET = re.compile(
@@ -132,9 +144,25 @@ CHARGE_ON_FILE_ALLOWED = (
 )
 CHARGE_ON_FILE_NOT_ALLOWED = "Not allowed: never agree to a charge"
 
-# A run of digits standing on its own (not part of a word such as W123456789),
-# allowing one space, dot or hyphen between digits.
-DIGIT_RUN = re.compile(r"(?<![A-Za-z0-9])\d(?:[ .-]?\d)*(?![A-Za-z0-9])")
+# A run of digit groups standing on its own (not part of a word such as
+# W123456789), with any separators between the groups.
+DIGIT_RUN = re.compile(rf"(?<![A-Za-z0-9])\d+(?:{SEP}\d+)*(?![A-Za-z0-9])")
+# The same, also inside a word (the digits of W123456789 or Card4111...).
+ANY_DIGIT_RUN = re.compile(rf"\d+(?:{SEP}\d+)*")
+# Dates and clock times are their own tokens, never part of a long number:
+# "2026-11-23 09:05" is not a 10-digit run.
+DATE_OR_TIME = re.compile(
+    r"(?<![0-9])(?:"
+    r"(?:19|20)\d\d[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\d|3[01])"
+    r"|(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])/(?:19|20)?\d\d"
+    r"|(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?"
+    r")(?![0-9]|[-/.:]\d)"
+)
+LONG_NUMBER_DIGITS = 9
+# A may_share item labelled like this never gets a 9-digit number through.
+SSN_LABEL = re.compile(
+    r"\b(?:ssn|ss#|social|tax ?id|tin|itin|ein|routing|aba|bank|card)\b", re.IGNORECASE
+)
 NO_PAYMENT_OR_SSN = (
     "no Social Security, card, bank account or routing numbers; the owner handles anything "
     "that needs one on their own call"
@@ -187,22 +215,23 @@ class BriefError(OnholdError):
 def check_number(value: str, allowed_country_codes: tuple[str, ...] = ("1",)) -> str:
     value = value.strip()
     if not E164.match(value):
-        raise BriefError(f"'{value}' is not an E.164 number like +12025550123")
+        raise BriefError(
+            "not an E.164 number: a + and the country code, then the number, digits only, "
+            "e.g. +12025550123"
+        )
     digits = value[1:]
     if not any(digits.startswith(cc) for cc in allowed_country_codes):
-        raise BriefError(
-            f"{value}: country code not allowed (allowed: {', '.join(allowed_country_codes)})"
-        )
+        raise BriefError(f"country code not allowed (allowed: {', '.join(allowed_country_codes)})")
     if digits.startswith("1"):
         if len(digits) != 11:
-            raise BriefError(f"{value}: North American numbers have 10 digits after +1")
+            raise BriefError("North American numbers have 10 digits after +1")
         area, exchange = digits[1:4], digits[4:7]
         if area in NANP_BLOCKED_AREA_CODES or area[0] in "01" or area[1:] == "11":
-            raise BriefError(f"{value}: area code {area} is not callable by the agent")
+            raise BriefError("the area code is premium-rate, a service code or invalid")
         if area in NANP_NON_US_CA:
-            raise BriefError(f"{value}: area code {area} is outside the US and Canada")
+            raise BriefError("the area code is outside the US and Canada")
         if exchange[0] in "01" or exchange[1:] == "11":
-            raise BriefError(f"{value}: exchange {exchange} is not a valid subscriber number")
+            raise BriefError("the exchange (digits 4-6) is not a valid subscriber number")
     return value
 
 
@@ -210,9 +239,7 @@ def _check_tz(value: str) -> str:
     try:
         ZoneInfo(value)
     except ZoneInfoNotFoundError, ValueError:
-        raise BriefError(
-            f"unknown time zone '{value}'; use an IANA zone such as America/Chicago"
-        ) from None
+        raise BriefError("unknown time zone; use an IANA zone such as America/Chicago") from None
     return value
 
 
@@ -258,37 +285,101 @@ def aba_valid(digits: str) -> bool:
     return sum(int(d) * w for d, w in zip(digits, (3, 7, 1) * 3, strict=True)) % 10 == 0
 
 
-def forbidden_problems(text: str, ssn: bool = True) -> list[str]:
+def _runs(text: str, standalone: bool = True) -> list[list[str]]:
+    """Each digit run in ``text``, as its digit groups; dates and times skipped.
+
+    ``standalone`` runs exclude digits that are part of a word (W123456789).
+    """
+    masked = DATE_OR_TIME.sub("~", text)
+    pattern = DIGIT_RUN if standalone else ANY_DIGIT_RUN
+    return [re.findall(r"\d+", m.group()) for m in pattern.finditer(masked)]
+
+
+def _windows(groups: list[str]) -> list[str]:
+    """Digit strings of every span of whole groups (each run read every way it could split)."""
+    out = []
+    for i in range(len(groups)):
+        for j in range(i + 1, len(groups) + 1):
+            out.append("".join(groups[i:j]))
+    return out
+
+
+def _is_ssn_shape(groups: list[str]) -> bool:
+    lengths = [len(g) for g in groups]
+    return any(lengths[i : i + 3] == [3, 2, 4] for i in range(len(lengths)))
+
+
+def _is_zip4(groups: list[str]) -> bool:
+    return [len(g) for g in groups] == [5, 4]
+
+
+def _card_in(groups: list[str]) -> bool:
+    """A 13-19 digit span of whole groups that passes Luhn, or such a prefix of a long group.
+
+    Spans follow the groups the writer typed, so "4111 1111 1111 1111 12 27" (a card
+    and an expiry) is found while an ordinary long account number rarely is.
+    """
+    for w in _windows(groups):
+        if 13 <= len(w) <= 19 and luhn_valid(w):
+            return True
+    for i, g in enumerate(groups):
+        rest = "".join(groups[i:])
+        if len(rest) > 19 and len(g) >= 13:
+            if any(luhn_valid(rest[:n]) for n in (15, 16)):
+                return True
+    return False
+
+
+def forbidden_problems(text: str, ssn: bool = True, labelled: bool = False) -> list[str]:
     """What ``text`` carries that no brief may: SSN, card or routing numbers.
 
-    With ``ssn=False`` only card numbers are looked for (keypad entry values,
-    where a 9-digit account number the owner approved is expected).
+    Card and routing numbers are looked for everywhere. Social Security numbers
+    are any 3-2-4 grouped number and any bare 9-digit number, except a ZIP+4
+    (5-4) and, with ``labelled=True``, a 9-digit number in a may_share item
+    labelled as a numbered category the class allows (and not as an SSN, tax
+    id, bank or card). ``ssn=False`` skips the SSN check (keypad entry values,
+    where a 9-digit account number the owner approved is expected; their 3-2-4
+    shape is refused by ``KeypadEntry`` itself).
     """
     found: list[str] = []
-    if ssn and SSN.search(text):
-        found.append(SSN_PROBLEM)
-    for m in DIGIT_RUN.finditer(text):
-        digits = re.sub(r"\D", "", m.group())
-        if len(digits) == 9 and ssn:
-            problem = (
-                ROUTING_PROBLEM
-                if aba_valid(digits) and not SSN.fullmatch(m.group())
-                else SSN_PROBLEM
-            )
-        elif 13 <= len(digits) <= 19 and luhn_valid(digits):
-            problem = CARD_PROBLEM
-        else:
-            continue
+
+    def add(problem: str) -> None:
         if problem not in found:
             found.append(problem)
+
+    labelled = labelled and not SSN_LABEL.search(text)
+    # Card numbers and 3-2-4 SSNs even inside a word.
+    for groups in _runs(text, standalone=False):
+        if _card_in(groups):
+            add(CARD_PROBLEM)
+        if ssn and _is_ssn_shape(groups):
+            add(SSN_PROBLEM)
+    for groups in _runs(text):
+        digits = "".join(groups)
+        if _is_ssn_shape(groups) or _is_zip4(groups):
+            continue
+        if any(len(w) == 9 and aba_valid(w) for w in _windows(groups)):
+            add(ROUTING_PROBLEM)
+        elif ssn and len(digits) == 9 and not labelled:
+            add(SSN_PROBLEM)
     return found
 
 
-def _forbidden_issues(field: str, text: str, ssn: bool = True) -> list[dict[str, Any]]:
+def has_long_number(text: str) -> bool:
+    """A run of 9 or more digits (inside a word too), not counting dates, times or a ZIP+4."""
+    return any(
+        len("".join(g)) >= LONG_NUMBER_DIGITS and not _is_zip4(g)
+        for g in _runs(text, standalone=False)
+    )
+
+
+def _forbidden_issues(
+    field: str, text: str, ssn: bool = True, labelled: bool = False
+) -> list[dict[str, Any]]:
     # Never echo the value: say what it looked like instead.
     return [
         issue(field, p, expected=NO_PAYMENT_OR_SSN, received="(withheld)")
-        for p in forbidden_problems(text, ssn=ssn)
+        for p in forbidden_problems(text, ssn=ssn, labelled=labelled)
     ]
 
 
@@ -298,8 +389,8 @@ def item_categories(text: str) -> list[str]:
     if "address" not in found and STREET.search(text):
         found.append("address")
     if "callback_number" not in found:
-        for m in DIGIT_RUN.finditer(text):
-            digits = re.sub(r"\D", "", m.group())
+        for groups in _runs(text):
+            digits = "".join(groups)
             if len(digits) == 10 or (len(digits) == 11 and digits[0] == "1"):
                 found.append("callback_number")
                 break
@@ -309,7 +400,7 @@ def item_categories(text: str) -> list[str]:
 def _text_issues(field: str, text: str) -> list[dict[str, Any]]:
     """Free text other than may_share: nothing forbidden, no long numbers, no addresses."""
     out = _forbidden_issues(field, text)
-    if not out and LONG_DIGITS.search(text):
+    if not out and has_long_number(text):
         out.append(
             issue(
                 field,
@@ -334,10 +425,15 @@ def _text_issues(field: str, text: str) -> list[dict[str, Any]]:
 
 def _may_share_issues(field: str, text: str, call_class: str) -> list[dict[str, Any]]:
     """A may_share item: nothing forbidden; addresses and labelled numbers the class allows."""
-    out = _forbidden_issues(field, text)
     allowed = classes.CLASS_CATEGORIES[call_class]
     cats = item_categories(text)
-    if not out and LONG_DIGITS.search(text):
+    # A 9-digit number may be an account, order, member or case number when the
+    # item says so; a callback label doesn't count (phone numbers have 10 digits).
+    labelled = any(
+        c in allowed and c in NUMBERED_CATEGORIES and c != "callback_number" for c in cats
+    )
+    out = _forbidden_issues(field, text, labelled=labelled)
+    if not out and has_long_number(text):
         if not any(c in allowed and c in NUMBERED_CATEGORIES for c in cats):
             numbered = [classes.CATEGORIES[c] for c in allowed if c in NUMBERED_CATEGORIES]
             out.append(
@@ -551,7 +647,7 @@ class KeypadEntry(BaseModel):
     def _value(cls, v: str) -> str:
         if not KEYPAD_VALUE.match(v):
             raise ValueError("must be 4-25 digits, optionally grouped with spaces or hyphens")
-        if SSN.fullmatch(v):
+        if _is_ssn_shape(re.findall(r"\d+", v)):
             raise ValueError("looks like a Social Security number; the agent never says one")
         return v
 

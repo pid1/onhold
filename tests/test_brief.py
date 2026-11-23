@@ -537,3 +537,131 @@ def test_a_dose_before_a_doctor_is_not_a_street_address(text):
 def test_a_street_address_in_the_goal_is_still_refused():
     with pytest.raises(BriefError, match="street address"):
         parse_brief(brief(goal="Ask them to mail it to 12 Oak Hollow Dr."), now=NOW)
+
+
+# Number shapes that must not slip through (review findings) ----------------------
+
+
+@pytest.mark.parametrize(
+    "number",
+    [
+        "4111  1111  1111  1111",
+        "4111–1111–1111–1111",
+        "4111—1111—1111—1111",
+        "4111.1111.1111.1111",
+        "4111/1111/1111/1111",
+        "4111\t1111 - 1111 1111",
+        "078–05–1120",
+        "078  05  1120",
+    ],
+)
+@pytest.mark.parametrize("field", ["goal", "may_share"])
+def test_any_separator_between_digits_is_seen_through(number, field):
+    value = f"Number {number}"
+    with pytest.raises(BriefError, match="card number|Social Security"):
+        parse_brief(brief(**{field: [value] if field == "may_share" else value}), now=NOW)
+
+
+def test_a_card_number_inside_a_word_is_refused():
+    with pytest.raises(BriefError, match="card number"):
+        parse_brief(brief(may_share=["Card4111111111111111"]), now=NOW)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        brief(may_share=["Account number 4111 1111 1111 1111 12 27"]),
+        brief(may_share=["Account number 41111111111111111227"]),
+        brief(keypad_entries=[{"label": "Account", "value": "4111 1111 1111 1111 1227"}]),
+    ],
+)
+def test_a_card_number_followed_by_an_expiry_is_refused(data):
+    with pytest.raises(BriefError, match="card number") as e:
+        parse_brief(data, now=NOW)
+    assert "4111" not in str(e.value.to_dict())
+
+
+@pytest.mark.parametrize("value", ["021000021", "021000021 12345678", "021-000-021"])
+def test_keypad_entries_still_refuse_routing_numbers(value):
+    with pytest.raises(BriefError, match="routing number") as e:
+        parse_brief(brief(keypad_entries=[{"label": "Account", "value": value}]), now=NOW)
+    assert e.value.issues[0]["field"] == "brief.keypad_entries[0].value"
+
+
+def test_keypad_entries_may_carry_a_nine_digit_account_number():
+    parse_brief(brief(keypad_entries=[{"label": "Account", "value": "123456789"}]), now=NOW)
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"callback_number": "4111111111111111"},
+        {"callback_number": "123-45-6789"},
+        {"to_number": "+1 123-45-6789"},
+        {"callee_timezone": "123-45-6789"},
+        {"call_window": window(tz="4111111111111111")},
+    ],
+)
+def test_rejected_values_are_never_echoed(over):
+    with pytest.raises(BriefError) as e:
+        parse_brief(brief(**over), now=NOW)
+    shown = str(e.value.to_dict())
+    for digits in ("4111111111111111", "123-45-6789", "6789"):
+        assert digits not in shown
+
+
+def test_check_number_messages_describe_rather_than_repeat():
+    with pytest.raises(BriefError) as e:
+        check_number("4111111111111111")
+    assert "4111" not in e.value.message
+    with pytest.raises(BriefError) as e:
+        check_number("+19005550123")
+    assert "900" not in e.value.message
+
+
+@pytest.mark.parametrize(
+    ("call_class", "item"),
+    [
+        ("customer_support", "Mailing address: 100 Example Street, Austin, TX 78701-1234"),
+        ("customer_support", "Order number 123456789"),
+        ("customer_support", "Account number 987654321"),
+        ("healthcare", "Insurance member ID 123456789"),
+        ("government", "Case number 123456789"),
+    ],
+)
+def test_zip_plus_four_and_labelled_nine_digit_numbers_pass(call_class, item):
+    assert not aba_valid("987654321") and not aba_valid("123456789")
+    parse_brief(brief(call_class=call_class, may_share=[item]), now=NOW)
+
+
+@pytest.mark.parametrize(
+    ("call_class", "item", "reason"),
+    [
+        ("customer_support", "123456789", "Social Security"),
+        ("customer_support", "Account number SSN 123456789", "Social Security"),
+        ("customer_support", "Order number 123-45-6789", "Social Security"),
+        ("customer_support", "Order number 021000021", "routing number"),
+        # A class that doesn't share member IDs gets no 9-digit pass for one.
+        ("customer_support", "Insurance member ID 123456789", "Social Security"),
+        ("healthcare", "Callback 123456789", "Social Security"),
+    ],
+)
+def test_nine_digit_numbers_still_refused(call_class, item, reason):
+    with pytest.raises(BriefError, match=reason):
+        parse_brief(brief(call_class=call_class, may_share=[item]), now=NOW)
+
+
+def test_zip_plus_four_is_not_a_long_number_in_a_question():
+    parse_brief(brief(questions=["Is the ZIP code 78701-1234 right for the office?"]), now=NOW)
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Confirm the appointment on 2026-11-23 09:05 is still on.",
+        "Confirm the appointment on 11/23/2026 at 9:05 is still on.",
+        "Ask whether 2026-11-23 10:30:00 works.",
+    ],
+)
+def test_dates_and_times_are_not_long_numbers(goal):
+    parse_brief(brief(goal=goal), now=NOW)
