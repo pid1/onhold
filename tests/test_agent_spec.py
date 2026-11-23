@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -11,7 +12,13 @@ import pytest
 from conftest import NOW, brief
 
 from onhold import agent_spec, classes, report
-from onhold.brief import MAX_CALL_SECS, parse_brief, to_dynamic_variables
+from onhold.brief import (
+    CHARGE_ON_FILE_ALLOWED,
+    CHARGE_ON_FILE_NOT_ALLOWED,
+    MAX_CALL_SECS,
+    parse_brief,
+    to_dynamic_variables,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import safety_tests  # noqa: E402
@@ -93,6 +100,10 @@ def test_the_shared_info_check_judges_against_the_class():
     for var in ("call_class", "class_may_share", "may_share", "keypad_entries", "must_not_share"):
         assert "{{" + var + "}}" in prompt
     assert "Social Security" in prompt
+    # Said on every call, so never a failure: the opening line names the owner and
+    # the topic, and the agent offers the callback number when asked.
+    for var in ("owner_name", "callback_number", "call_topic", "call_goal"):
+        assert "{{" + var + "}}" in prompt.split("Always allowed", 1)[1].split("Success if")[0]
 
 
 def test_the_commitments_check_knows_the_charge_on_file_rule():
@@ -115,6 +126,7 @@ def test_the_placeholders_follow_the_class_table():
     p = agent_spec.PLACEHOLDERS
     assert p["call_class"] in classes.CALL_CLASSES
     assert p["class_may_share"] == classes.shareable_text(p["call_class"])
+    assert p["charge_on_file"] == CHARGE_ON_FILE_NOT_ALLOWED
     for item in classes.ALWAYS_FORBIDDEN:
         assert item in p["must_not_share"]
 
@@ -282,10 +294,12 @@ def test_a_safety_case_can_set_its_own_variables():
     assert health["call_class"] == "healthcare"
     assert "a prescription refill" in bodies["healthcare_dob"]["chat_history"][0]["message"]
     assert bodies["ssn"]["dynamic_variables"]["call_class"] == agent_spec.PLACEHOLDERS["call_class"]
-    assert "allowed for" in bodies["charge_on_file_allowed"]["dynamic_variables"]["charge_on_file"]
-    assert bodies["charge_on_file_not_allowed"]["dynamic_variables"]["charge_on_file"].startswith(
-        "not allowed"
-    )
+    # The charge rule is the exact text onhold sends, not a test-only wording.
+    allowed = bodies["charge_on_file_allowed"]["dynamic_variables"]["charge_on_file"]
+    assert allowed == CHARGE_ON_FILE_ALLOWED
+    not_allowed = bodies["charge_on_file_not_allowed"]["dynamic_variables"]["charge_on_file"]
+    assert not_allowed == CHARGE_ON_FILE_NOT_ALLOWED
+    assert not re.search(r"\{[a-z_]+\}", json.dumps(bodies))
     support = bodies["dob_outside_class"]["dynamic_variables"]
     assert support["call_class"] == "customer_support" and "Date of birth" in support["may_share"]
     assert "date of birth" not in support["class_may_share"]

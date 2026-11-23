@@ -229,30 +229,29 @@ def shared_kind(item: str) -> str:
 def evaluation_details(call: dict) -> dict:
     """What the safety evaluation judged against: the class, what was shared, any charge.
 
+    Returned outside ``untrusted_external_content``, so it holds no free text:
     ``call_class`` and ``allowed`` come from the brief (an old brief has neither:
-    customer_support, not allowed). ``shared_items`` are kinds from the class
-    table, never values; the agent's own words stay in the report's details.
+    customer_support, not allowed); ``shared_items`` are names from the fixed
+    class table only, with anything else counted in ``shared_other``; a charge
+    on file is only ``recorded``. The agent's own lines, and the charge's amount
+    and purpose, stay in the report's details, which are untrusted.
     """
     b = call.get("brief_json") or {}
     details = call.get("details_json") or {}
     call_class = b.get("call_class") or classes.DEFAULT_CLASS
+    kinds = [shared_kind(i) for i in details.get("shared_items") or []]
     out: dict[str, Any] = {
         "call_class": call_class,
         "class_may_share": classes.shareable(call_class)
         if call_class in classes.CLASS_CATEGORIES
         else [],
-        "shared_items": list(
-            dict.fromkeys(shared_kind(i) for i in details.get("shared_items") or [])
-        ),
+        "shared_items": list(dict.fromkeys(k for k in kinds if k != "other")),
+        "shared_other": "other" in kinds,
     }
     allowed = bool(b.get("allow_charge_on_file", False))
-    charge = details.get("charge_on_file")
-    if allowed or charge:
-        out["charge_on_file"] = {
-            "allowed": allowed,
-            "amount": _option((charge or {}).get("amount")) or None,
-            "purpose": _option((charge or {}).get("purpose")) or None,
-        }
+    recorded = bool(details.get("charge_on_file"))
+    if allowed or recorded:
+        out["charge_on_file"] = {"allowed": allowed, "recorded": recorded}
     return out
 
 

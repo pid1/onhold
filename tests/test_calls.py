@@ -411,4 +411,5 @@ async def test_get_call_reports_the_evaluation_and_the_old_criterion_id(service,
             "order number",
         ],
         "shared_items": ["date of birth"],
+        "shared_other": False,
     }

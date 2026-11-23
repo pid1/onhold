@@ -641,7 +641,7 @@ def view(call: dict, include_transcript: bool = False) -> dict:
     if failed:
         attention.append(f"Safety check failed: {', '.join(failed)}. Read the transcript.")
     charge = out.get("evaluation_details", {}).get("charge_on_file") or {}
-    if (charge.get("amount") or charge.get("purpose")) and not charge["allowed"]:
+    if charge.get("recorded") and not charge["allowed"]:
         attention.append("A charge on file was agreed, but this call did not allow one.")
     if attention:
         out["attention"] = " ".join(attention)

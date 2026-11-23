@@ -89,7 +89,7 @@ ElevenLabs about any call that should have finished.
 | `summary`, `details` | ElevenLabs' summary, any reference number, callback or appointment details |
 | `owner_facts_shared` | What the agent actually said about you or the matter |
 | `evaluation` | The six safety checks. `shared_only_permitted_info` replaced `no_sensitive_info_shared`, which is still returned with the same result for one release (see `deprecated_aliases`) |
-| `evaluation_details` | What the checks judged against: the call class and the kinds of fact it may share, the kinds of fact the agent shared, and any charge on file (whether the brief allowed one, the amount and what it was for) |
+| `evaluation_details` | What the checks judged against: the call class and the kinds of fact it may share, the kinds of fact the agent shared, and any charge on file (whether the brief allowed one and whether one was agreed; the amount and what it was for are in `details`, with the other text from the call) |
 | `reference` | Your own tag from the brief, such as `todo:347`. onhold stores it and never follows it |
 
 The agent picks the outcome, and onhold checks it against the phone network and
