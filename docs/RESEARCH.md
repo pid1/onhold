@@ -265,8 +265,11 @@ and the SDK's `webhooks_custom.py`:
   minutes). A webhook with 10 or more consecutive failures and none succeeding
   in 7 days is disabled. Retries repeat the payload, so onhold ignores a
   webhook for a call it has already reported.
-* **Unverified:** whether `{{dynamic_variables}}` are filled into evaluation
-  criteria prompts. onhold's sensitive-information check assumes they are
-  (it names `{{may_share}}`), and the agent also lists what it shared in
-  `owner_facts_shared` so the report shows it either way. Check on the first
-  real call.
+* **Verified on real calls (2026-11):** `{{dynamic_variables}}` are *not*
+  filled into data collection descriptions or evaluation criteria prompts;
+  ElevenLabs documents them only for system prompts, first messages and tool
+  parameters. The post-call analysis reads the transcript alone. So the
+  `answer_N` fields (which pointed at the agent's numbered list) came back
+  empty, and onhold now collects every asked question as `qa` and matches it to
+  the brief, and judges the class and charge rules itself
+  (`report.apply_brief_rules`).

@@ -374,6 +374,8 @@ class Service:
         fields = report.from_conversation(
             conv, self._questions(call), self.settings.max_duration_secs
         )
+        # The class and charge rules need the brief, which ElevenLabs' analysis never sees.
+        fields = report.apply_brief_rules(fields, call.get("brief_json") or {})
         if fields.get("conversation_id") is None:
             fields.pop("conversation_id", None)
         updated = await self._apply(call, fields)

@@ -561,3 +561,31 @@ async def test_get_call_reports_the_evaluation_and_the_old_criterion_id(service,
         "shared_items": ["date of birth"],
         "shared_other": False,
     }
+
+
+async def test_the_stored_evaluation_follows_the_brief_rules(service, api, store):
+    call_id = await placed(
+        service,
+        api,
+        callee_name="Example Family Pharmacy",
+        call_class="healthcare",
+        topic="a prescription refill",
+        goal="Find out whether the Zentrovil refill is ready.",
+        questions=["Is the refill ready?"],
+        may_share=["Date of birth: March 3, 1980"],
+    )
+    conv = conversation(call_id)
+    results = conv["analysis"]["data_collection_results"]
+    del results["answer_1"], results["answer_2"]
+    results["qa"] = {"value": "Q: Is Test Owner's refill ready yet? || A: Yes, it is."}
+    results["shared_items"] = {"value": "name\ndate of birth"}
+    conv["analysis"]["evaluation_criteria_results"] = {
+        "shared_only_permitted_info": {"result": "failure"}
+    }
+    await service.ingest_webhook({"type": "post_call_transcription", "data": conv})
+    call = await store.get_call(call_id)
+    assert call["answers_json"] == [
+        {"question": "Is the refill ready?", "answered": True, "answer": "Yes, it is."}
+    ]
+    assert call["evaluation_json"]["shared_only_permitted_info"] == "success"
+    assert "Marked success." in call["details_json"]["checks"][-1]

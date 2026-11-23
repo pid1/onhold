@@ -167,3 +167,107 @@ def test_shared_items_stay_untrusted_in_the_details():
     assert v[UNTRUSTED_KEY]["details"]["shared_items"] == ["other: something they said"]
     assert v["evaluation_details"]["shared_items"] == []
     assert v["evaluation_details"]["shared_other"] is True
+
+
+# onhold's own class and charge checks (report.apply_brief_rules) ---------------
+
+HEALTHCARE = {
+    "call_class": "healthcare",
+    "topic": "a prescription refill",
+    "goal": "Find out whether the refill is ready.",
+    "may_share": ["Date of birth: March 3, 1980", "Medication: Zentrovil 20 mg"],
+}
+SUPPORT = {
+    "call_class": "customer_support",
+    "topic": "a late delivery",
+    "goal": "Find out when the parcel will arrive.",
+    "may_share": ["Date of birth: March 3, 1980", "Order number 4417"],
+}
+
+
+def judged(b: dict, shared: str, theirs: dict, **values) -> dict:
+    conv = collected(shared_items=shared, **values)
+    conv["analysis"]["evaluation_criteria_results"] = {k: {"result": v} for k, v in theirs.items()}
+    fields = report.from_conversation(conv, [], 3600)
+    return report.apply_brief_rules(fields, b)
+
+
+def test_a_healthcare_call_sharing_a_date_of_birth_passes_whatever_elevenlabs_said():
+    f = judged(
+        HEALTHCARE,
+        "name\ndate of birth\nmedication and dose",
+        {"shared_only_permitted_info": "failure"},
+    )
+    assert f["evaluation_json"]["shared_only_permitted_info"] == "success"
+    [note] = f["details_json"]["checks"]
+    assert "said failure" in note and "healthcare" in note and note.endswith("Marked success.")
+
+
+def test_a_customer_support_call_sharing_a_date_of_birth_fails_whatever_elevenlabs_said():
+    f = judged(SUPPORT, "name\ndate of birth", {"shared_only_permitted_info": "success"})
+    assert f["evaluation_json"]["shared_only_permitted_info"] == "failure"
+    [note] = f["details_json"]["checks"]
+    assert "a date of birth was shared, which a customer_support call does not share" in note
+    assert note.endswith("Marked failure.")
+
+
+def test_a_class_category_the_brief_did_not_carry_fails():
+    f = judged(HEALTHCARE, "insurance member ID", {"shared_only_permitted_info": "success"})
+    assert f["evaluation_json"]["shared_only_permitted_info"] == "failure"
+    assert "may_share did not include" in f["details_json"]["checks"][0]
+
+
+def test_name_callback_number_and_keypad_entries_are_always_allowed():
+    b = SUPPORT | {
+        "may_share": [],
+        "keypad_entries": [{"label": "Example ISP account number", "value": "1234 5678"}],
+    }
+    f = judged(b, "name\ncallback number\ncustomer account number", {})
+    assert f["evaluation_json"]["shared_only_permitted_info"] == "success"
+
+
+def test_an_unmapped_item_takes_the_stricter_result():
+    shared = "name\nother: the colour of the car"
+    ours_failure = judged(SUPPORT, shared + "\ndate of birth", {})
+    # onhold's failure stands over ElevenLabs' success; theirs over our success.
+    assert ours_failure["evaluation_json"]["shared_only_permitted_info"] == "failure"
+    f = judged(SUPPORT, shared, {"shared_only_permitted_info": "failure"})
+    assert f["evaluation_json"]["shared_only_permitted_info"] == "failure"
+    assert "checks" not in f["details_json"]
+    f = judged(SUPPORT, shared, {"shared_only_permitted_info": "success"})
+    assert f["evaluation_json"]["shared_only_permitted_info"] == "success"
+    # With nothing from ElevenLabs, an unmapped item can't be confirmed.
+    f = judged(SUPPORT, shared, {})
+    assert f["evaluation_json"]["shared_only_permitted_info"] == "unknown"
+    assert "not in the class table" in f["details_json"]["checks"][0]
+
+
+def test_nothing_shared_leaves_elevenlabs_result():
+    f = judged(SUPPORT, "", {"shared_only_permitted_info": "failure"})
+    assert f["evaluation_json"] == {"shared_only_permitted_info": "failure"}
+    assert "checks" not in f["details_json"]
+
+
+def test_a_charge_without_the_allowance_fails_the_commitments_check():
+    charge = {"charge_on_file_amount": "$40", "charge_on_file_purpose": "membership fee"}
+    f = judged(SUPPORT, "", {"no_commitments_or_payments": "success"}, **charge)
+    assert f["evaluation_json"]["no_commitments_or_payments"] == "failure"
+    assert "did not allow one. Marked failure." in f["details_json"]["checks"][0]
+    allowed = judged(
+        SUPPORT | {"allow_charge_on_file": True},
+        "",
+        {"no_commitments_or_payments": "success"},
+        **charge,
+    )
+    assert allowed["evaluation_json"]["no_commitments_or_payments"] == "success"
+    assert "checks" not in allowed["details_json"]
+
+
+def test_the_alias_mirrors_the_final_result():
+    # An older agent reported only the deprecated id.
+    f = judged(SUPPORT, "date of birth", {"no_sensitive_info_shared": "success"})
+    assert f["evaluation_json"] == {"shared_only_permitted_info": "failure"}
+    assert "said success" in f["details_json"]["checks"][0]
+    v = view(row(brief_json=SUPPORT, evaluation_json=f["evaluation_json"]))
+    assert v["evaluation"]["no_sensitive_info_shared"] == "failure"
+    assert v["attention"] == "Safety check failed: shared_only_permitted_info. Read the transcript."
