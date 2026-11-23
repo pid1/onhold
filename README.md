@@ -16,8 +16,10 @@ cron trigger. You bring an ElevenLabs account and a Twilio number.
    returns a preview: the exact opening line, the voicemail it would leave, and
    every value the voice agent will be given. Nothing has dialled.
 3. Claude shows you the preview. If you say yes, it calls
-   `place_call(draft_id, confirm=true)`. If you say no, nothing happens and the
-   draft expires in 30 minutes.
+   `place_call(draft_id, confirm=true)` and the call goes out right away. If you
+   say no, nothing happens and the draft expires in 30 minutes. onhold can't
+   schedule a call for later: draft it when you want it made, during calling
+   hours.
 4. The agent calls, introduces itself as an AI assistant calling for you,
    works through your questions and hangs up.
 5. A minute later the report is in onhold's database and on your phone through
@@ -32,13 +34,14 @@ else. Anything sensitive stays with you because there is nowhere for it to
 come from.
 
 - **Every call needs your go-ahead on the exact call.** A draft can be used
-  once and expires after 30 minutes. `place_call` needs `confirm: true`. There
-  is no retry loop and no queue of its own.
+  once and expires after 30 minutes. `place_call` needs `confirm: true` and
+  dials at once. There is no retry loop, no queue and no scheduling.
 - **Briefs are checked before anything leaves the Worker.** Numbers must be
   E.164 and in an allowed country, and premium-rate and service numbers are
-  refused. Every call is capped at one hour, so calls are placed only between
-  8 a.m. and 8 p.m. in the callee's time zone and still end by 9 p.m. (TCPA
-  calling hours). A brief is refused if it contains a Social Security
+  refused. Every brief names the callee's time zone (`callee_timezone`). Every
+  call is capped at one hour, so calls are drafted and placed only between
+  8 a.m. and 8 p.m. in that time zone and still end by 9 p.m. (TCPA calling
+  hours). A brief is refused if it contains a Social Security
   number, a card number, or a bank account or routing number, in any class.
   Every problem in a brief comes back at once, each with its field, so one
   retry fixes them all.
@@ -81,7 +84,7 @@ ElevenLabs about any call that should have finished.
 
 | Field | What it says |
 |---|---|
-| `status` | `scheduled`, `dialing`, `in_progress`, `ended`, `failed` or `cancelled` |
+| `status` | `dialing`, `in_progress`, `ended` or `failed` |
 | `outcome` | `goal_met`, `partial` (reached someone, not everything answered), `needs_owner` (they need you: ID, a signature, payment) or `not_reached` |
 | `reason` | Why it wasn't reached: `no_answer`, `busy`, `voicemail`, `phone_tree_dead_end`, `hold_timeout`, `wrong_number`, `hung_up` or `call_failed` |
 | `answers` | Each question from the brief, whether it was answered, and the answer |
@@ -111,10 +114,8 @@ Text that came from the person called is returned under
 | `get_brief_guide(call_class)` | Example briefs for each class, the validation checklist and tips. Also the `onhold://guide` resource |
 | `draft_call(brief)` | Check a brief and return the full preview, any class warnings and a `draft_id`. Dials nothing |
 | `place_call(draft_id, confirm)` | Dial a draft now |
-| `schedule_call(draft_id, confirm)` | Schedule a draft that has a `call_window` |
-| `cancel_call(call_id)` | Cancel a scheduled call |
 | `get_call(call_id, include_transcript)` | The report; `retry_after_seconds` while it runs |
-| `list_calls(outcome, status, since, reference)` | Past and pending calls |
+| `list_calls(outcome, status, since, reference)` | Past and running calls |
 | `delete_call(call_id, confirm)` | Delete a finished call and its report |
 | `get_menu_paths(to_number)` | Saved phone-menu paths for a number, each `works` or `stale` |
 | `delete_menu_paths(to_number, confirm, presses)` | Delete one saved path, or all of a number's |

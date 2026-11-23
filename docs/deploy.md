@@ -195,8 +195,7 @@ Set it up like this:
 ## Pausing
 ## Pausing
 
-Set `"PAUSED": "true"` under `vars` in `wrangler.jsonc` and redeploy. Every `place_call` and `schedule_call` is then refused.
-Cancel anything already scheduled with `cancel_call`.
+Set `"PAUSED": "true"` under `vars` in `wrangler.jsonc` and redeploy. Every `place_call` is then refused.
 
 ## Running it somewhere else
 

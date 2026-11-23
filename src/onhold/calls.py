@@ -3,10 +3,14 @@
 The rule this module exists to keep: **nothing dials without the owner's
 go-ahead on the exact call.** ``draft_call`` validates a brief and returns
 everything the voice agent will be given, with a ``draft_id``. Only
-``place_call`` or ``schedule_call`` with that id and ``confirm=true`` dials,
-once: a draft is claimed atomically, expires after ``draft_ttl_secs``, and
-cannot be reused. There is no retry loop and no queue of our own; a
-scheduled call is an ElevenLabs batch with one recipient.
+``place_call`` with that id and ``confirm=true`` dials, at once and once: a
+draft is claimed atomically, expires after ``draft_ttl_secs``, and cannot be
+reused. There is no retry loop, no queue and no scheduling.
+
+Scheduling (``schedule_call``, ElevenLabs batch calling) was removed on
+2026-11-23: ElevenLabs refused its submit, so it never worked. Rows from that
+time may still carry the mode or status ``scheduled`` or ``cancelled`` (the
+schema keeps them); they are read and shown like any finished call.
 
 Results arrive three ways (see ``report``): the post-call webhook, the
 call-failure webhook, and ``reconcile``, which a cron runs for anything the
@@ -63,7 +67,7 @@ RECONCILE_AFTER = timedelta(minutes=20)
 # A call still unresolved this long after it should have started is given up on.
 GIVE_UP_AFTER = timedelta(hours=24)
 RETRY_AFTER_SECS = 60
-OPEN = ("scheduled", "dialing", "in_progress")
+OPEN = ("dialing", "in_progress")
 # Outcomes where the agent got through to a person.
 REACHED = ("goal_met", "partial", "needs_owner")
 
@@ -105,11 +109,7 @@ class Service:
     def _check(self, brief: dict | CallBrief) -> CallBrief:
         if not brief:
             raise BriefError("a call needs a brief; nothing is dialled without one")
-        b = (
-            check_brief(brief, now=self._now())
-            if isinstance(brief, CallBrief)
-            else parse_brief(brief, now=self._now())
-        )
+        b = check_brief(brief) if isinstance(brief, CallBrief) else parse_brief(brief)
         try:
             check_number(b.to_number, self.settings.allowed_country_codes)
         except BriefError as e:
@@ -137,18 +137,7 @@ class Service:
         call_id = "c_" + secrets.token_hex(8)
         variables = self._variables(b, call_id)
         warnings = class_warnings(b)
-        if b.call_window:
-            dial = b.call_window.dial_time(now)
-            when = {
-                "mode": "scheduled",
-                "dials_at_local": dial.astimezone(ZoneInfo(b.call_window.timezone)).isoformat(
-                    timespec="minutes"
-                ),
-                "use": "schedule_call",
-            }
-        else:
-            check_call_hours(now, b.timezone)
-            when = {"mode": "now", "use": "place_call"}
+        check_call_hours(now, b.callee_timezone)
         preview = {
             "call_id": call_id,
             "callee_name": b.callee_name,
@@ -157,7 +146,6 @@ class Service:
             "call_class": b.call_class,
             "class_may_share": classes.shareable(b.call_class),
             "allow_charge_on_file": b.allow_charge_on_file,
-            **when,
             "first_message": agent_spec.render(agent_spec.first_message(), variables),
             "first_message_when": (
                 "The agent listens first and says this to the first person who answers, "
@@ -194,8 +182,8 @@ class Service:
             "preview": preview,
             "next": (
                 f"Show the owner this whole preview and ask whether to go ahead.{heed} Only on "
-                f"a clear yes, call {when['use']}(draft_id, confirm=true). The draft works once "
-                f"and expires in {self.settings.draft_ttl_secs // 60} minutes."
+                "a clear yes, call place_call(draft_id, confirm=true), which dials at once. The "
+                f"draft works once and expires in {self.settings.draft_ttl_secs // 60} minutes."
             ),
         }
         if warnings:
@@ -230,32 +218,30 @@ class Service:
             raise CallError("that draft was already used or has expired")
         return b, preview
 
-    def _call_row(self, b: CallBrief, preview: dict, draft_id: str, mode: str, status: str) -> dict:
+    def _call_row(self, b: CallBrief, preview: dict, draft_id: str) -> dict:
         now = _ts(self._now())
         return {
             "id": preview["call_id"],
             "draft_id": draft_id,
             "created_at": now,
             "updated_at": now,
-            "mode": mode,
+            "mode": "now",
             "callee_name": b.callee_name,
             "to_number": b.to_number,
             "topic": b.topic,
             "reference": b.reference,
             "brief_json": b.model_dump(mode="json"),
-            "status": status,
+            "status": "dialing",
         }
 
     async def place_call(self, draft_id: str, confirm: bool) -> dict:
         b, preview = await self._claim(draft_id, confirm)
         try:
-            if b.call_window:
-                raise CallError("this draft has a call_window; use schedule_call")
-            check_call_hours(self._now(), b.timezone)
-        except CallError, BriefError:
+            check_call_hours(self._now(), b.callee_timezone)
+        except BriefError:
             await self.store.release_draft(draft_id)
             raise
-        await self.store.insert_call(self._call_row(b, preview, draft_id, "now", "dialing"))
+        await self.store.insert_call(self._call_row(b, preview, draft_id))
         try:
             res = await self.client.outbound_call(
                 agent_id=self.settings.agent_id,
@@ -284,63 +270,12 @@ class Service:
             "next": "The report arrives when the call ends. Call get_call(call_id) to read it.",
         }
 
-    async def schedule_call(self, draft_id: str, confirm: bool) -> dict:
-        b, preview = await self._claim(draft_id, confirm)
-        try:
-            if not b.call_window:
-                raise CallError("this draft has no call_window; use place_call to call now")
-            dial = b.call_window.dial_time(self._now())
-        except CallError, BriefError:
-            await self.store.release_draft(draft_id)
-            raise
-        row = self._call_row(b, preview, draft_id, "scheduled", "scheduled")
-        row["scheduled_for"] = _ts(dial)
-        await self.store.insert_call(row)
-        try:
-            res = await self.client.submit_batch(
-                call_name=f"onhold {preview['call_id']}",
-                agent_id=self.settings.agent_id,
-                phone_number_id=self.settings.phone_number_id,
-                to_number=b.to_number,
-                dynamic_variables=preview["dynamic_variables"],
-                scheduled_time_unix=_ts(dial),
-                timezone=b.call_window.timezone,
-                ringing_timeout_secs=self.settings.ringing_timeout_secs,
-            )
-        except ElevenLabsError as e:
-            await self.store.delete_call(preview["call_id"])
-            await self.store.release_draft(draft_id)
-            raise CallError(
-                f"ElevenLabs refused the schedule ({e.status}); nothing is booked"
-            ) from e
-        await self.store.update_call(
-            preview["call_id"], {"batch_id": res["id"], "updated_at": _ts(self._now())}
-        )
-        return {
-            "call_id": preview["call_id"],
-            "status": "scheduled",
-            "dials_at_local": dial.astimezone(ZoneInfo(b.call_window.timezone)).isoformat(
-                timespec="minutes"
-            ),
-            "next": "cancel_call(call_id) stops it. get_call(call_id) after it dials.",
-        }
-
-    async def cancel_call(self, call_id: str) -> dict:
-        call = await self._get(call_id)
-        if call["status"] != "scheduled" or not call["batch_id"]:
-            raise CallError(f"only a scheduled call can be cancelled; this one is {call['status']}")
-        await self.client.cancel_batch(call["batch_id"])
-        await self.store.update_call(
-            call_id, {"status": "cancelled", "updated_at": _ts(self._now())}
-        )
-        return {"call_id": call_id, "status": "cancelled"}
-
     async def delete_call(self, call_id: str, confirm: bool) -> dict:
         if confirm is not True:
             raise CallError("confirm must be true, and only after the owner asked to delete it")
         call = await self._get(call_id)
         if call["status"] in OPEN:
-            raise CallError("cancel or wait for the call to end before deleting it")
+            raise CallError("wait for the call to end before deleting it")
         await self.store.delete_call(call_id)
         return {
             "call_id": call_id,
@@ -358,8 +293,7 @@ class Service:
 
     async def get_call(self, call_id: str, include_transcript: bool = False) -> dict:
         call = await self._get(call_id)
-        started = call["scheduled_for"] or call["created_at"]
-        if call["status"] in OPEN and _ts(self._now()) - started > 120:
+        if call["status"] in OPEN and _ts(self._now()) - call["created_at"] > 120:
             # The webhook is the main path; this makes a pull work without it.
             try:
                 call = await self._refresh(call) or call
@@ -511,26 +445,6 @@ class Service:
     async def _refresh(self, call: dict) -> dict | None:
         """Ask ElevenLabs about one open call. Returns the updated row, if it changed."""
         conv_id = call["conversation_id"]
-        if not conv_id and call["batch_id"]:
-            batch = await self.client.get_batch(call["batch_id"])
-            recipient = (batch.get("recipients") or [{}])[0]
-            conv_id = recipient.get("conversation_id")
-            if batch.get("status") == "cancelled":
-                return await self._apply(call, {"status": "cancelled"})
-            if not conv_id:
-                if recipient.get("status") == "failed" or batch.get("status") == "failed":
-                    return await self._apply(
-                        call,
-                        {
-                            "status": "ended",
-                            "outcome": "not_reached",
-                            "reason": "call_failed",
-                            "details_json": {"ended_because": "the scheduled call did not dial"},
-                        },
-                    )
-                return None
-            await self.store.update_call(call["id"], {"conversation_id": conv_id})
-            call = {**call, "conversation_id": conv_id}
         if not conv_id:
             return None
         conv = await self.client.get_conversation(conv_id)
@@ -558,8 +472,7 @@ class Service:
                     call = updated
             except ElevenLabsError as e:
                 log.warning("reconcile of %s failed: %s", call["id"], e.status)
-            started = call["scheduled_for"] or call["created_at"]
-            if _ts(now) - started > GIVE_UP_AFTER.total_seconds():
+            if _ts(now) - call["created_at"] > GIVE_UP_AFTER.total_seconds():
                 await self._apply(
                     call,
                     {
@@ -619,13 +532,12 @@ def menu_path_view(row: dict) -> dict:
 
 
 def view(call: dict, include_transcript: bool = False) -> dict:
-    tz = (call.get("brief_json") or {}).get("callee_timezone") or (
-        ((call.get("brief_json") or {}).get("call_window") or {}).get("timezone")
-    )
+    brief = call.get("brief_json") or {}
+    # A row from before scheduling was removed may have only call_window.timezone.
+    tz = brief.get("callee_timezone") or (brief.get("call_window") or {}).get("timezone")
     out = summary_view(call) | {
         "mode": call["mode"],
         "to_number": call["to_number"],
-        "scheduled_for_local": _iso(call["scheduled_for"], tz),
         "started_at_local": _iso(call["started_at"], tz),
         "duration_secs": call["duration_secs"],
         "cost_credits": call["cost"],

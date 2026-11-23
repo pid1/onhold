@@ -8,7 +8,8 @@ The README is onhold's homepage and its documentation. The repository's GitHub "
 
 These are the project's point, not style. A change that weakens one needs the owner's explicit decision in the PR.
 
-- **Never dial without the owner's go-ahead on the exact call.** `place_call` and `schedule_call` take a `draft_id` from `draft_call` and `confirm=true`. A draft is claimed atomically (`Store.claim_draft`), used once, and expires after `draft_ttl_secs`. Don't add a path that dials from a brief directly, a retry loop, or a queue.
+- **Never dial without the owner's go-ahead on the exact call.** `place_call` takes a `draft_id` from `draft_call` and `confirm=true`, and dials at once. A draft is claimed atomically (`Store.claim_draft`), used once, and expires after `draft_ttl_secs`. Don't add a path that dials from a brief directly, a retry loop, or a queue.
+- **No scheduling.** The owner's decision, 2026-11-23: ElevenLabs refused onhold's batch-calling submit with a 403, so `schedule_call`, `cancel_call` and the brief's `call_window` were removed. A brief that still sends `call_window` is refused on that field with a message saying so. The `scheduled` and `cancelled` status values, `mode = 'scheduled'`, `batch_id` and `scheduled_for` stay in the schema (migrations are append-only) so old rows still read; nothing writes them, and neither status counts as open.
 - **Know nothing but the brief.** onhold's code has no connection to the owner's calendar, contacts, email, Rally or any other data, and must not gain one. An owner may attach their own read-only free/busy tool to their ElevenLabs agent; that is their agent configuration, documented in docs/deploy.md, never a feature here. Another agent with its own access (Claude with other connectors) may write a brief from those; onhold only stores a brief's `reference` and never follows it.
 - **One owner.** The agent calls only on behalf of the deployment's owner (`OWNER_NAME`). `/mcp` is behind Cloudflare Access and `onhold.access.verify` checks the token again; with `OWNER_EMAIL` set, only that identity gets in.
 - **Nothing personal in the repo.** The owner's name, numbers, ids and pronunciation rules are Worker secrets or local files. Tests use "Test Owner" and the fictional 555-01xx numbers. `tests/test_agent_spec.py::test_nothing_personal_is_in_the_agent_files` guards the agent files.
@@ -16,7 +17,7 @@ These are the project's point, not style. A change that weakens one needs the ow
 
 ## Layout
 
-- `src/onhold/brief.py` validates a brief (numbers, TCPA hours, no SSN, card or routing numbers, class-aware rules for may_share) and turns it into the voice agent's dynamic variables, including `onhold_call_id`, which every webhook carries back. It collects every problem into one `BriefError` with `issues`.
+- `src/onhold/brief.py` validates a brief (numbers, a required `callee_timezone` for TCPA hours, no SSN, card or routing numbers, class-aware rules for may_share) and turns it into the voice agent's dynamic variables, including `onhold_call_id`, which every webhook carries back. It collects every problem into one `BriefError` with `issues`.
 - `src/onhold/classes.py` is the one source for call classes: the brief's `call_class` description, the guide, the prompt variables (`call_class`, `class_may_share`, `charge_on_file`) and the `shared_only_permitted_info` evaluation all read it. `src/onhold/guide.py` is the brief guide (`get_brief_guide`, `onhold://guide`); a test runs each example brief through `parse_brief`.
 - `src/onhold/errors.py`: every refusal is an `OnholdError` (`code`, `message`, `issues`). `mcp_server` returns it as JSON with a `request_id` and logs unexpected exceptions with the same id. The old `no_sensitive_info_shared` result is still returned as an alias of `shared_only_permitted_info`; drop the alias in the release after this one.
 - `src/onhold/calls.py` is the `Service` every tool, webhook and cron goes through. `src/onhold/report.py` turns an ElevenLabs conversation into the report row and cross-checks the agent's outcome.
@@ -33,7 +34,7 @@ These are the project's point, not style. A change that weakens one needs the ow
 Don't auto-merge.
 
 ### Build and test
-- Install with `uv sync` and `npm ci`. Run `uv run pytest` (153 tests on 2026-11-16, about a second). No test touches the network: ElevenLabs, Pushover and Cloudflare Access keys are faked in `tests/conftest.py`.
+- Install with `uv sync` and `npm ci`. Run `uv run pytest` (288 tests on 2026-11-23, about a second). No test touches the network: ElevenLabs, Pushover and Cloudflare Access keys are faked in `tests/conftest.py`.
 - Check style with `uv run ruff check .` and `uv run ruff format --check .`. CI runs these three commands.
 - `uv run pywrangler dev` runs the Worker in workerd against a local D1. Run `npm ci` and `npx wrangler d1 migrations apply onhold --local` first. Pass settings with `--var NAME:value`. `uv run pywrangler dev --port 8791` serves `GET /healthz` 200 with `--var` set for ELEVENLABS_API_KEY, ELEVENLABS_WEBHOOK_SECRET, AGENT_ID, PHONE_NUMBER_ID, ASSISTANT_NUMBER and OWNER_NAME. Scheduled handlers can be triggered through the local explorer API that wrangler prints.
 - `npm ci` with npm 11.19 skips workerd's postinstall script and prints an install-scripts warning. `uv run pywrangler dev --port 8791` still serves `GET /healthz` 200.

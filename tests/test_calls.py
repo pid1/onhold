@@ -14,17 +14,11 @@ from onhold.config import Settings
 pytestmark = pytest.mark.anyio
 
 OUTBOUND = "/v1/convai/twilio/outbound-call"
-BATCH = "/v1/convai/batch-calling/submit"
+OLD_WINDOW = {"timezone": "America/Chicago", "start": "2026-11-06T09:00", "end": "2026-11-06T12:00"}
 
 
 def ok_outbound(api, conv_id="conv_1"):
     api.route("POST", OUTBOUND, {"success": True, "conversation_id": conv_id, "callSid": "CA1"})
-
-
-def window(**over):
-    w = {"timezone": "America/Chicago", "start": "2026-11-06T09:00", "end": "2026-11-06T12:00"}
-    w.update(over)
-    return w
 
 
 # Drafting --------------------------------------------------------------------
@@ -34,7 +28,7 @@ async def test_a_draft_shows_everything_and_dials_nothing(service, api):
     d = await service.draft_call(brief(reference="todo:1"))
     p = d["preview"]
     assert d["draft_id"].startswith("d_")
-    assert p["mode"] == "now" and p["use"] == "place_call"
+    assert not {"mode", "use", "dials_at_local"} & set(p)
     assert "on behalf of Test Owner" in p["first_message"]
     assert "a licence plate renewal" in p["first_message"]
     assert "{{" not in p["first_message"] and "{{" not in p["voicemail_message"]
@@ -42,7 +36,8 @@ async def test_a_draft_shows_everything_and_dials_nothing(service, api):
     assert "512-555-0142" in p["voicemail_message"]
     assert p["dynamic_variables"]["onhold_call_id"] == p["call_id"]
     assert p["reference"] == "todo:1"
-    assert "owner" in d["next"] and "confirm=true" in d["next"]
+    assert "owner" in d["next"] and "place_call(draft_id, confirm=true)" in d["next"]
+    assert "schedule" not in d["next"]
     assert api.requests == []
 
 
@@ -57,10 +52,18 @@ async def test_the_assistant_cannot_call_itself(service):
         await service.draft_call(brief(to_number="+15125550100"))
 
 
-async def test_a_scheduled_draft_says_when(service):
-    d = await service.draft_call(brief(callee_timezone=None, call_window=window()))
-    assert d["preview"]["mode"] == "scheduled"
-    assert d["preview"]["dials_at_local"] == "2026-11-06T09:00-06:00"
+async def test_a_brief_with_a_call_window_is_refused(service, api):
+    with pytest.raises(BriefError, match="scheduling was removed") as e:
+        await service.draft_call(brief(call_window=OLD_WINDOW))
+    assert [i["field"] for i in e.value.issues] == ["brief.call_window"]
+    assert api.requests == []
+
+
+async def test_a_brief_without_callee_timezone_is_refused(service):
+    data = brief()
+    del data["callee_timezone"]
+    with pytest.raises(BriefError, match="callee_timezone"):
+        await service.draft_call(data)
 
 
 # The go-ahead ----------------------------------------------------------------
@@ -128,29 +131,84 @@ async def test_a_refused_call_frees_the_draft(service, api, store):
     assert (await service.place_call(d["draft_id"], True))["status"] == "dialing"
 
 
-async def test_a_windowed_draft_must_be_scheduled(service, api):
-    d = await service.draft_call(brief(callee_timezone=None, call_window=window()))
+async def test_placing_outside_calling_hours_is_refused_and_frees_the_draft(service, api, clock):
+    clock.now = clock.now.replace(day=6, hour=1, minute=50)  # 19:50 in Chicago
+    d = await service.draft_call(brief())
     ok_outbound(api)
-    with pytest.raises(CallError, match="schedule_call"):
+    clock.advance(minutes=15)  # 20:05: a one-hour call could run past 21:00
+    with pytest.raises(BriefError, match="08:00-20:00") as e:
         await service.place_call(d["draft_id"], True)
-    # The refusal did not use the draft up.
-    api.route("POST", BATCH, {"id": "batch_1", "status": "pending"})
-    r = await service.schedule_call(d["draft_id"], True)
-    assert r["status"] == "scheduled"
-    [sent] = api.sent("POST", BATCH)
-    assert sent["scheduled_time_unix"] == int(
-        (service._now().replace(day=6, hour=15, minute=0)).timestamp()
+    assert e.value.issues[0]["field"] == "brief.callee_timezone"
+    assert api.dials() == 0
+    clock.advance(minutes=-10)  # 19:55, and the draft is still unused
+    assert (await service.place_call(d["draft_id"], True))["status"] == "dialing"
+
+
+async def test_a_draft_saved_with_a_call_window_cannot_be_placed(service, api, store, clock):
+    """A draft from before scheduling was removed: refused, nothing dialled."""
+    now = int(clock.now.timestamp())
+    data = brief(call_window=OLD_WINDOW)
+    del data["callee_timezone"]
+    await store.insert_draft(
+        {
+            "id": "d_0123456789abcdef",
+            "created_at": now,
+            "expires_at": now + 1800,
+            "brief_json": data,
+            "preview_json": {"call_id": "c_0123456789abcdef", "dynamic_variables": {}},
+        }
     )
+    ok_outbound(api)
+    with pytest.raises(BriefError, match="scheduling was removed"):
+        await service.place_call("d_0123456789abcdef", True)
+    assert api.dials() == 0
+    assert await store.get_call("c_0123456789abcdef") is None
 
 
-async def test_cancel_a_scheduled_call(service, api):
-    d = await service.draft_call(brief(callee_timezone=None, call_window=window()))
-    api.route("POST", BATCH, {"id": "batch_1", "status": "pending"})
-    r = await service.schedule_call(d["draft_id"], True)
-    api.route("POST", "/v1/convai/batch-calling/batch_1/cancel", {"status": "cancelled"})
-    assert (await service.cancel_call(r["call_id"]))["status"] == "cancelled"
-    with pytest.raises(CallError, match="only a scheduled call"):
-        await service.cancel_call(r["call_id"])
+def old_row(call_id: str, status: str, created_at: int) -> dict:
+    """A calls row as schedule_call or cancel_call wrote it before scheduling was removed."""
+    data = brief(call_window=OLD_WINDOW, reference="todo:old")
+    del data["callee_timezone"]
+    return {
+        "id": call_id,
+        "draft_id": "d_" + call_id[2:],
+        "created_at": created_at,
+        "updated_at": created_at,
+        "mode": "scheduled",
+        "callee_name": data["callee_name"],
+        "to_number": data["to_number"],
+        "topic": data["topic"],
+        "reference": "todo:old",
+        "brief_json": data,
+        "status": status,
+        "batch_id": "batch_1",
+        "scheduled_for": created_at + 86400,
+    }
+
+
+async def test_old_scheduled_and_cancelled_rows_still_read(service, api, store, clock):
+    created = int(clock.now.timestamp()) - 3 * 86400
+    await store.insert_call(old_row("c_000000000000000a", "scheduled", created))
+    await store.insert_call(old_row("c_000000000000000b", "cancelled", created + 60))
+    clock.advance(minutes=5)
+    for call_id, status in (
+        ("c_000000000000000a", "scheduled"),
+        ("c_000000000000000b", "cancelled"),
+    ):
+        v = await service.get_call(call_id)
+        assert v["status"] == status and v["mode"] == "scheduled"
+        assert v["reference"] == "todo:old"
+        assert "retry_after_seconds" not in v  # not a running call
+    listed = await service.list_calls(reference="todo:old")
+    assert [c["status"] for c in listed["calls"]] == ["cancelled", "scheduled"]
+    assert [c["call_id"] for c in (await service.list_calls(status="scheduled"))["calls"]] == [
+        "c_000000000000000a"
+    ]
+    # The cron leaves them alone and nothing asks ElevenLabs about a batch.
+    assert await service.reconcile() == {"checked": 0, "changed": 0}
+    assert api.requests == []
+    # And they can be deleted like any finished call.
+    assert (await service.delete_call("c_000000000000000a", True))["deleted"]
 
 
 # Reports ---------------------------------------------------------------------
@@ -404,25 +462,6 @@ async def test_reconcile_fetches_a_call_the_webhook_missed(service, api, store, 
     assert (await store.get_call(call_id))["outcome"] == "goal_met"
 
 
-async def test_reconcile_follows_a_scheduled_call_to_its_conversation(service, api, store, clock):
-    d = await service.draft_call(brief(callee_timezone=None, call_window=window()))
-    api.route("POST", BATCH, {"id": "batch_1", "status": "pending"})
-    call_id = (await service.schedule_call(d["draft_id"], True))["call_id"]
-    api.route(
-        "GET",
-        "/v1/convai/batch-calling/batch_1",
-        {
-            "status": "completed",
-            "recipients": [{"status": "completed", "conversation_id": "conv_9"}],
-        },
-    )
-    api.route("GET", "/v1/convai/conversations/conv_9", conversation(call_id, conv_id="conv_9"))
-    clock.now = clock.now.replace(day=6, hour=15, minute=30)
-    assert (await service.reconcile())["changed"] == 1
-    call = await store.get_call(call_id)
-    assert call["conversation_id"] == "conv_9" and call["outcome"] == "goal_met"
-
-
 async def test_get_call_refreshes_a_running_call(service, api, clock):
     call_id = await placed(service, api)
     api.route("GET", "/v1/convai/conversations/conv_1", {"status": "in-progress"})
@@ -486,7 +525,7 @@ async def test_keypad_entries_are_purged_with_the_transcript(service, api, store
 
 async def test_delete_needs_confirm_and_a_finished_call(service, api, store):
     call_id = await placed(service, api)
-    with pytest.raises(CallError, match="cancel or wait"):
+    with pytest.raises(CallError, match="wait for the call to end"):
         await service.delete_call(call_id, True)
     await service.ingest_webhook({"type": "post_call_transcription", "data": conversation(call_id)})
     with pytest.raises(CallError, match="confirm must be true"):

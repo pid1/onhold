@@ -86,9 +86,7 @@ class FakeAPI:
         return out
 
     def dials(self) -> int:
-        return len(self.sent("POST", "/v1/convai/twilio/outbound-call")) + len(
-            self.sent("POST", "/v1/convai/batch-calling/submit")
-        )
+        return len(self.sent("POST", "/v1/convai/twilio/outbound-call"))
 
 
 @dataclass

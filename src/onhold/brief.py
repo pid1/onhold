@@ -4,7 +4,7 @@ A call never starts without a brief, written for a call the owner asked for
 and approved. The brief is validated strictly here, before any request leaves
 the Worker, and every problem is reported at once: ``parse_brief`` and
 ``check_brief`` raise one ``BriefError`` whose ``issues`` name each failing
-field as a JSON path (``brief.may_share[2]``, ``brief.call_window.start``).
+field as a JSON path (``brief.may_share[2]``, ``brief.keypad_entries[0].value``).
 
 * numbers are E.164, in an allowed country code, and not premium-rate or
   N11 service numbers;
@@ -56,7 +56,7 @@ rendered as numbered lines.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, time, timedelta
+from datetime import datetime, time
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -117,14 +117,9 @@ STREET = re.compile(
 # The longest any call may run, everywhere: the voice agent's own cap
 # (agent.json), the report's hold-timeout check and the calling hours below.
 MAX_CALL_SECS = 3600
-MAX_WINDOW_HOURS = 12  # 08:00-20:00: the last call that can still end by 21:00
-MAX_SCHEDULE_DAYS = 14
-MIN_LEAD = timedelta(seconds=60)
-MIN_WINDOW_LEFT = timedelta(minutes=10)
 # TCPA calling hours, in the callee's local time: 8:00 a.m. to 9:00 p.m.
-# (https://elevenlabs.io/docs/eleven-agents/legal/tcpa). A call placed now must
-# start by 20:00 so the one-hour cap still ends it by 21:00. A call_window
-# must end by then too, since a scheduled call may dial at any point in it.
+# (https://elevenlabs.io/docs/eleven-agents/legal/tcpa). A call must start by
+# 20:00 so the one-hour cap still ends it by 21:00.
 CALL_HOURS_START = time(8, 0)
 CALL_HOURS_END = time(21, 0)
 LATEST_START_NOW = time(21 - MAX_CALL_SECS // 3600, 0)
@@ -244,18 +239,25 @@ def _check_tz(value: str) -> str:
 
 
 def check_call_hours(now: datetime, tz: str) -> None:
-    """Refuse a call placed now outside 8:00-20:00 in the callee's time zone."""
+    """Refuse a call outside 8:00-20:00 in the callee's time zone."""
     local = now.astimezone(ZoneInfo(tz)).time()
     if not (CALL_HOURS_START <= local <= LATEST_START_NOW):
         problem = (
             f"it is {local:%H:%M} in {tz}; calls are placed only "
             f"{CALL_HOURS_START:%H:%M}-{LATEST_START_NOW:%H:%M} callee time (TCPA hours "
-            "8 a.m.-9 p.m., less the one-hour call cap). Draft it with a call_window and use "
-            "schedule_call."
+            "8 a.m.-9 p.m., less the one-hour call cap). Try again during those hours."
         )
         raise BriefError(
             problem,
-            [issue("brief.call_window", problem, expected=f"a call_window {WINDOW_RULES}")],
+            [
+                issue(
+                    "brief.callee_timezone",
+                    problem,
+                    expected=f"a time between {CALL_HOURS_START:%H:%M} and "
+                    f"{LATEST_START_NOW:%H:%M} in {tz}",
+                    received=tz,
+                )
+            ],
         )
 
 
@@ -508,100 +510,6 @@ def _raise(issues: list[dict[str, Any]]) -> None:
     raise BriefError(f"{len(lines)} problems with the brief: " + "; ".join(lines), issues)
 
 
-WINDOW_TIME_FORMAT = (
-    "the callee's local wall time, YYYY-MM-DDTHH:MM with no offset, e.g. 2026-11-06T09:00"
-)
-WINDOW_RULES = (
-    f"in the future, within {CALL_HOURS_START:%H:%M}-{LATEST_START_NOW:%H:%M} on one day in "
-    f"the callee's time zone, at most {MAX_WINDOW_HOURS} hours long, starting within "
-    f"{MAX_SCHEDULE_DAYS} days"
-)
-
-
-class CallWindow(BaseModel):
-    """When the call may be placed, in the business's local time."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    timezone: Annotated[
-        str, Field(description="IANA time zone of the business, e.g. America/Chicago")
-    ]
-    start: Annotated[
-        datetime,
-        Field(
-            description=f"Window start: {WINDOW_TIME_FORMAT}. The window must be {WINDOW_RULES}."
-        ),
-    ]
-    end: Annotated[
-        datetime,
-        Field(
-            description="Window end: the callee's local wall time in the same format, e.g. "
-            f"2026-11-06T12:00, on the same day as start. The window must be {WINDOW_RULES}."
-        ),
-    ]
-
-    @field_validator("timezone")
-    @classmethod
-    def _tz(cls, v: str) -> str:
-        return _check_tz(v)
-
-    def bounds_utc(self) -> tuple[datetime, datetime]:
-        tz = ZoneInfo(self.timezone)
-        start = self.start if self.start.tzinfo else self.start.replace(tzinfo=tz)
-        end = self.end if self.end.tzinfo else self.end.replace(tzinfo=tz)
-        return start.astimezone(UTC), end.astimezone(UTC)
-
-    def issues(self, now: datetime, prefix: str = "brief.call_window") -> list[dict[str, Any]]:
-        """Every problem with the window, each naming ``start`` or ``end``."""
-        tz = ZoneInfo(self.timezone)
-        start, end = self.bounds_utc()
-        local_start, local_end = start.astimezone(tz), end.astimezone(tz)
-        shown = {"start": f"{local_start:%Y-%m-%dT%H:%M}", "end": f"{local_end:%Y-%m-%dT%H:%M}"}
-
-        def bad(name: str, problem: str, expected: str) -> dict[str, Any]:
-            return issue(f"{prefix}.{name}", problem, expected=expected, received=shown[name])
-
-        if end <= start:
-            return [bad("end", "end must be after start", "a time later than start")]
-        out = []
-        if end - start > timedelta(hours=MAX_WINDOW_HOURS):
-            out.append(
-                bad("end", f"at most {MAX_WINDOW_HOURS} hours long", "an end closer to start")
-            )
-        tcpa = (
-            f"must lie within {CALL_HOURS_START:%H:%M}-{LATEST_START_NOW:%H:%M} on one day in "
-            "the callee's time zone (TCPA calling hours, less the one-hour call cap)"
-        )
-        if local_start.time() < CALL_HOURS_START:
-            out.append(bad("start", tcpa, f"{CALL_HOURS_START:%H:%M} or later, local time"))
-        if local_start.date() != local_end.date() or local_end.time() > LATEST_START_NOW:
-            out.append(
-                bad("end", tcpa, f"{LATEST_START_NOW:%H:%M} or earlier, the same day as start")
-            )
-        if start - now > timedelta(days=MAX_SCHEDULE_DAYS):
-            out.append(bad("start", f"must start within {MAX_SCHEDULE_DAYS} days", "a nearer date"))
-        if end - max(start, now + MIN_LEAD) < MIN_WINDOW_LEFT:
-            out.append(
-                bad(
-                    "end",
-                    "the window has ended or is about to end",
-                    f"an end at least {MIN_WINDOW_LEFT.seconds // 60} minutes from now; it is "
-                    f"{now.astimezone(tz):%Y-%m-%dT%H:%M} in {self.timezone}",
-                )
-            )
-        return out
-
-    def dial_time(self, now: datetime) -> datetime:
-        """The UTC moment to dial: the window start, or shortly after now if inside it."""
-        _raise(self.issues(now))
-        start, _ = self.bounds_utc()
-        return max(start, now + MIN_LEAD)
-
-    def contains(self, now: datetime) -> bool:
-        start, end = self.bounds_utc()
-        return start <= now <= end - MIN_WINDOW_LEFT
-
-
 class MenuStep(BaseModel):
     """One keypad press on the way through a phone menu."""
 
@@ -777,21 +685,13 @@ class CallBrief(BaseModel):
         ),
     ] = None
     callee_timezone: Annotated[
-        str | None,
+        str,
         Field(
-            description="IANA time zone of the business, e.g. America/Chicago. Required unless "
-            "call_window is given (TCPA calling hours)."
+            description="IANA time zone of the business, e.g. America/Chicago. Calls are "
+            f"placed only {CALL_HOURS_START:%H:%M}-{LATEST_START_NOW:%H:%M} in this zone "
+            "(TCPA calling hours, less the one-hour call cap)."
         ),
-    ] = None
-    call_window: Annotated[
-        CallWindow | None,
-        Field(
-            description="When a scheduled call may be placed (use schedule_call), e.g. "
-            '{"timezone": "America/Chicago", "start": "2026-11-06T09:00", "end": '
-            '"2026-11-06T12:00"}. start and end are the callee\'s local wall time, no offset; '
-            f"the window must be {WINDOW_RULES}. Omit it to call now with place_call."
-        ),
-    ] = None
+    ]
     allow_charge_on_file: Annotated[
         bool,
         Field(
@@ -818,12 +718,8 @@ class CallBrief(BaseModel):
 
     @field_validator("callee_timezone")
     @classmethod
-    def _callee_tz(cls, v: str | None) -> str | None:
-        return None if v is None else _check_tz(v)
-
-    @property
-    def timezone(self) -> str | None:
-        return self.call_window.timezone if self.call_window else self.callee_timezone
+    def _callee_tz(cls, v: str) -> str:
+        return _check_tz(v)
 
     def check_content(self) -> None:
         """Refuse forbidden or misplaced content (raises one BriefError with every issue)."""
@@ -867,10 +763,6 @@ def to_dynamic_variables(
     The callback number offered is the brief's, else the deployment's default
     (``CALLBACK_NUMBER``), else the assistant's own number.
     """
-    window = "none (call placed now)"
-    if brief.call_window:
-        w = brief.call_window
-        window = f"{w.start:%A %Y-%m-%d %H:%M} to {w.end:%H:%M} ({w.timezone})"
     return {
         "owner_name": owner_name,
         "callee_name": brief.callee_name,
@@ -886,7 +778,6 @@ def to_dynamic_variables(
             brief.callback_number or default_callback or assistant_number
         ),
         "assistant_number": speakable_number(assistant_number),
-        "call_window": window,
         "onhold_call_id": call_id,
         "call_class": brief.call_class,
         "class_may_share": classes.shareable_text(brief.call_class),
@@ -905,20 +796,27 @@ _EXPECTED = {
     "list_type": "a list",
     "string_type": "text",
     "model_type": "an object",
-    "datetime_type": WINDOW_TIME_FORMAT,
-    "datetime_parsing": WINDOW_TIME_FORMAT,
-    "datetime_from_date_parsing": WINDOW_TIME_FORMAT,
 }
 
 
 # What a field takes, for errors whose type alone doesn't say (validators' ValueErrors).
 _FIELD_EXPECTED = {
-    "timezone": "an IANA zone such as America/Chicago",
     "callee_timezone": "an IANA zone such as America/Chicago",
     "to_number": "an E.164 number in the US or Canada, e.g. +15125550123",
     "callback_number": "an E.164 number in the US or Canada, e.g. +15125550123",
     "value": "4-25 digits, optionally grouped with spaces or hyphens; never an SSN",
     "press": "1-4 of 0-9, * and #",
+}
+
+
+# Fields a brief no longer takes, with what to do instead of the bare "extra inputs" message.
+REMOVED_FIELDS = {
+    ("call_window",): (
+        "scheduling was removed from onhold; there is no call_window. A call is placed with "
+        "place_call, during calling hours in the callee's time zone",
+        f"no call_window; callee_timezone set, and draft_call and place_call run between "
+        f"{CALL_HOURS_START:%H:%M} and {LATEST_START_NOW:%H:%M} callee time",
+    ),
 }
 
 
@@ -951,64 +849,33 @@ def validation_issues(e: ValidationError) -> list[dict[str, Any]]:
         elif kind == "literal_error":
             expected = f"one of {ctx.get('expected')}"
         received = None if kind in ("missing", "extra_forbidden") else err.get("input")
+        problem = err["msg"].removeprefix("Value error, ")
+        if kind == "extra_forbidden" and err["loc"] in REMOVED_FIELDS:
+            problem, expected = REMOVED_FIELDS[err["loc"]]
         out.append(
-            issue(
-                _path(err["loc"]),
-                err["msg"].removeprefix("Value error, "),
-                expected=expected,
-                received=_safe_received(received),
-            )
+            issue(_path(err["loc"]), problem, expected=expected, received=_safe_received(received))
         )
     return out
 
 
-def parse_brief(data: dict, now: datetime | None = None) -> CallBrief:
+def parse_brief(data: dict) -> CallBrief:
     """Validate a brief dict, raising one BriefError that lists every issue found."""
     try:
-        return check_brief(CallBrief.model_validate(data), now)
+        return check_brief(CallBrief.model_validate(data))
     except ValidationError as e:
         found = validation_issues(e)
     if isinstance(data, dict):
         found += content_issues(data)
-        # The window's own rules, when the window itself parsed.
-        if isinstance(data.get("call_window"), dict) and not any(
-            i["field"].startswith("brief.call_window") for i in found
-        ):
-            try:
-                found += CallWindow.model_validate(data["call_window"]).issues(
-                    now or datetime.now(UTC)
-                )
-            except ValidationError:
-                pass
     _raise(found)
     raise AssertionError("unreachable: a ValidationError always has an issue")
 
 
-def check_brief(brief: CallBrief, now: datetime | None = None) -> CallBrief:
-    """Checks beyond the schema: content rules, numbers, the window. Collects them all."""
+def check_brief(brief: CallBrief) -> CallBrief:
+    """Checks beyond the schema: content rules and numbers. Collects them all."""
     found = content_issues(brief.model_dump(mode="json"))
     if brief.callback_number and brief.callback_number == brief.to_number:
         found.append(
             issue("brief.callback_number", "must differ from to_number", expected="another number")
-        )
-    if brief.call_window:
-        if brief.callee_timezone and brief.callee_timezone != brief.call_window.timezone:
-            found.append(
-                issue(
-                    "brief.callee_timezone",
-                    "must match call_window.timezone",
-                    expected=brief.call_window.timezone,
-                    received=brief.callee_timezone,
-                )
-            )
-        found += brief.call_window.issues(now or datetime.now(UTC))
-    elif not brief.callee_timezone:
-        found.append(
-            issue(
-                "brief.callee_timezone",
-                "required (IANA zone of the business) for TCPA hours",
-                expected="an IANA zone such as America/Chicago, or a call_window",
-            )
         )
     _raise(found)
     return brief

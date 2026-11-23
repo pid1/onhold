@@ -54,7 +54,9 @@ DRAFT_COLUMNS = (
     "used_at",
     "call_id",
 )
-OPEN_STATUSES = ("scheduled", "dialing", "in_progress")
+# "scheduled" and "cancelled" stay in the schema for rows from before
+# scheduling was removed; no call is open in either.
+OPEN_STATUSES = ("dialing", "in_progress")
 MENU_PATH_LIMIT = 10
 
 
@@ -178,7 +180,7 @@ class Store:
         placeholders = ", ".join("?" * len(OPEN_STATUSES))
         rows, _ = await self._run(
             f"SELECT * FROM calls WHERE status IN ({placeholders}) "  # noqa: S608 (constant placeholders)
-            "AND COALESCE(scheduled_for, created_at) < ? ORDER BY created_at LIMIT 50",
+            "AND created_at < ? ORDER BY created_at LIMIT 50",
             [*OPEN_STATUSES, before],
         )
         return [_decode(r) for r in rows]

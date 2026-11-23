@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 
 import pytest
 from mcp_helpers import call_tool, mcp_client, rpc
@@ -11,8 +10,6 @@ from mcp_helpers import call_tool, mcp_client, rpc
 from onhold import classes, guide
 from onhold.brief import parse_brief
 from onhold.mcp_server import INSTRUCTIONS
-
-NOW = datetime(2026, 11, 20, 15, 0, tzinfo=UTC)  # a Friday, 09:00 in Chicago
 
 
 @pytest.fixture
@@ -22,30 +19,34 @@ def client(service, monkeypatch):
 
 @pytest.mark.parametrize("call_class", classes.CALL_CLASSES)
 def test_every_example_brief_validates(call_class):
-    example = guide.examples(NOW)[call_class]
+    example = guide.examples()[call_class]
     assert example["call_class"] == call_class
-    parse_brief(example, now=NOW)
+    parse_brief(example)
 
 
 def test_example_briefs_validate_apart_from_call_class():
     """Runs before cc-brief merges: everything but call_class passes today's checks."""
-    for example in guide.examples(NOW).values():
-        parse_brief({k: v for k, v in example.items() if k != "call_class"}, now=NOW)
+    for example in guide.examples().values():
+        parse_brief({k: v for k, v in example.items() if k != "call_class"})
 
 
-def test_example_window_is_the_next_weekday_morning():
-    window = guide.examples(NOW)["government"]["call_window"]
-    assert window["start"] == "2026-11-23T09:00"  # Monday
+def test_examples_and_checklist_never_mention_scheduling():
+    for example in guide.examples().values():
+        assert example["callee_timezone"] == guide.EXAMPLE_TZ
+        assert "call_window" not in example
+    text = json.dumps(guide.guide()).lower()
+    assert "call_window" not in text and "schedul" not in text
+    assert "callee_timezone" in " ".join(guide.checklist())
 
 
 def test_the_guide_is_compact_and_covers_each_class():
-    g = guide.guide(now=NOW)
+    g = guide.guide()
     assert set(g["examples"]) == set(classes.CALL_CLASSES)
     assert len(json.dumps(g)) < 3400  # about 800 tokens
 
 
 def test_example_numbers_are_fictional():
-    for example in guide.examples(NOW).values():
+    for example in guide.examples().values():
         for key in ("to_number", "callback_number"):
             if key in example:
                 assert example[key].startswith("+151255501")
@@ -81,4 +82,6 @@ def test_instructions_point_to_the_guide_and_name_every_class():
     for item in classes.ALWAYS_FORBIDDEN:
         assert item in INSTRUCTIONS
     assert "keypad_entries" in INSTRUCTIONS and "get_menu_paths" in INSTRUCTIONS
+    assert "schedule_call" not in INSTRUCTIONS and "call_window" not in INSTRUCTIONS
+    assert "callee_timezone" in INSTRUCTIONS
     assert len(INSTRUCTIONS.split()) < 230

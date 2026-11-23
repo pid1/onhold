@@ -53,10 +53,10 @@
     "delete_transcript_and_pii": false,
     "zero_retention_mode": false,
     "apply_to_existing_conversations": false,
-    "_privacy_note": "No audio is recorded. ElevenLabs keeps transcripts and analysis 30 days; onhold keeps its own copy of the transcript for the same 30 days. Zero Retention Mode would block scheduled calls and the post-call webhook's transcript."
+    "_privacy_note": "No audio is recorded. ElevenLabs keeps transcripts and analysis 30 days; onhold keeps its own copy of the transcript for the same 30 days. Zero Retention Mode would block the post-call webhook's transcript."
   },
   "overrides": {
-    "_overrides_note": "Batch calling fails unless language, first_message, system prompt and voice are overridable (ElevenLabs batch-calls docs). onhold never sends overrides, only dynamic variables.",
+    "_overrides_note": "onhold never sends overrides, only dynamic variables.",
     "agent": {
       "first_message": true,
       "language": true,
