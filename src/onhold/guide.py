@@ -5,24 +5,18 @@ The checklist states the rules ``brief.parse_brief``/``check_brief`` enforce,
 built from the same constants, and every example brief is run through
 ``parse_brief`` by the tests, so the guide and the validator cannot drift apart.
 
-The examples use fictional 555-01xx numbers and made-up names. Their
-``call_window`` is computed from ``now`` (the next weekday, morning, callee
-time), so an example is always valid to adapt as it stands.
+The examples use fictional 555-01xx numbers and made-up names.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from onhold import classes
 from onhold.brief import (
     CALL_HOURS_START,
     LATEST_START_NOW,
     MAX_KEYPAD_ENTRIES,
-    MAX_SCHEDULE_DAYS,
-    MAX_WINDOW_HOURS,
     Item,
     Short,
     Text,
@@ -35,16 +29,8 @@ def _cap(t: Any) -> int:
     return next(m.max_length for m in t.__metadata__ if getattr(m, "max_length", None))
 
 
-def _next_weekday_window(now: datetime, tz: str) -> dict[str, str]:
-    day = now.astimezone(ZoneInfo(tz)).date() + timedelta(days=1)
-    while day.weekday() >= 5:
-        day += timedelta(days=1)
-    return {"timezone": tz, "start": f"{day}T09:00", "end": f"{day}T11:30"}
-
-
-def examples(now: datetime | None = None) -> dict[str, dict[str, Any]]:
+def examples() -> dict[str, dict[str, Any]]:
     """One complete, valid brief per call class, ready to adapt."""
-    window = _next_weekday_window(now or datetime.now(UTC), EXAMPLE_TZ)
     return {
         "healthcare": {
             "call_class": "healthcare",
@@ -74,7 +60,7 @@ def examples(now: datetime | None = None) -> dict[str, dict[str, Any]]:
             "questions": ["Can it be renewed by mail?", "What is the fee?"],
             "may_share": ["Name on the registration: Jordan Example", "Plate number: EXM 4821"],
             "give_up_when": "they need the owner in person",
-            "call_window": window,
+            "callee_timezone": EXAMPLE_TZ,
         },
         "customer_support": {
             "call_class": "customer_support",
@@ -99,11 +85,8 @@ def checklist() -> list[str]:
     return [
         "Numbers: E.164 (+15125550123), US/Canada only, no 900/976/N11; callback_number "
         "differs from to_number.",
-        f"callee_timezone (IANA) or call_window, same zone if both. Without a window, draft "
-        f"only {start}-{latest} callee time.",
-        "call_window: local wall time, no offset or Z (start 2026-11-24T09:00); one day, "
-        f"{start}-{latest}, at most {MAX_WINDOW_HOURS} h, not over yet, starts within "
-        f"{MAX_SCHEDULE_DAYS} days.",
+        f"callee_timezone (IANA, e.g. {EXAMPLE_TZ}) is required. Draft and place the call "
+        f"only {start}-{latest} callee time; place_call dials right away.",
         f"Caps: callee_name, topic {_cap(Short)} chars; goal, give_up_when {_cap(Text)}; list "
         f"items {_cap(Item)}; lists 10 items; keypad_entries {MAX_KEYPAD_ENTRIES}.",
         "Anywhere: no SSN, card, bank or routing number. Outside may_share: no 9+ digit run "
@@ -124,9 +107,9 @@ TIPS = [
 ]
 
 
-def guide(call_class: str | None = None, now: datetime | None = None) -> dict[str, Any]:
+def guide(call_class: str | None = None) -> dict[str, Any]:
     """The whole guide, or with ``call_class`` just that class's rule and example."""
-    ex = examples(now)
+    ex = examples()
     if call_class is not None:
         return {
             "call_class": call_class,

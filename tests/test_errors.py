@@ -96,7 +96,7 @@ NOV23_MAY_SHARE = [
 ]
 
 
-def nov23_brief(start="2026-11-23T09:05", end="2026-11-23T12:00", **over) -> dict:
+def nov23_brief(**over) -> dict:
     return brief(
         callee_name="Example Family Clinic",
         to_number="+15125550131",
@@ -111,7 +111,6 @@ def nov23_brief(start="2026-11-23T09:05", end="2026-11-23T12:00", **over) -> dic
         must_not_share=[],
         give_up_when="they need the patient on the line",
         callee_timezone="America/Chicago",
-        call_window={"timezone": "America/Chicago", "start": start, "end": end},
         reference="refill-escalation",
         **over,
     )
@@ -124,33 +123,18 @@ async def test_nov23_brief_drafts_as_a_healthcare_call(client, clock, api):
         client, "draft_call", {"brief": nov23_brief() | {"call_class": "healthcare"}}
     )
     assert "error" not in out, out
-    assert out["preview"]["dials_at_local"] == "2026-11-23T09:05-06:00"
+    assert out["preview"]["call_class"] == "healthcare"
     assert api.dials() == 0
 
 
-@pytest.mark.parametrize(
-    ("start", "end"),
-    [
-        ("2026-11-23T09:05", "2026-11-23T12:00"),
-        ("2026-11-23T09:05:00", "2026-11-23T12:00:00"),
-        ("2026-11-23T09:05:00-06:00", "2026-11-23T12:00:00-06:00"),
-    ],
-)
-async def test_nov23_window_drafts_in_every_format(client, clock, start, end):
-    """The window was never the problem: with seconds or an offset it drafts too."""
+async def test_a_brief_with_a_call_window_is_refused_on_that_field(client, clock, api):
+    """The Nov 23 brief as first sent, with a window: scheduling is gone, said by field."""
     clock.now = NOV23_MORNING
-    may_share = [s for s in NOV23_MAY_SHARE if "Callback" not in s]
-    b = nov23_brief(start, end) | {"may_share": may_share, "callback_number": "+15125550142"}
-    out = await call_tool(client, "draft_call", {"brief": b})
-    assert "error" not in out, out
-    assert out["preview"]["dials_at_local"] == "2026-11-23T09:05-06:00"
-
-
-async def test_a_utc_window_is_refused_on_the_window_field(client, clock):
-    """'Z' makes 09:05 UTC, 03:05 in Chicago: outside calling hours, said by field."""
-    clock.now = NOV23_MORNING
-    b = nov23_brief("2026-11-23T09:05:00Z", "2026-11-23T12:00:00Z")
-    b["may_share"] = NOV23_MAY_SHARE[:1]
+    window = {"timezone": "America/Chicago", "start": "2026-11-23T09:05", "end": "2026-11-23T12:00"}
+    b = nov23_brief(call_class="healthcare", call_window=window)
     err = (await call_tool(client, "draft_call", {"brief": b}))["error"]
     assert_shape(err, "invalid_brief")
-    assert any("call_window" in f for f in fields(err)), err
+    assert fields(err) == ["brief.call_window"], err
+    [i] = err["issues"]
+    assert "scheduling was removed" in i["problem"] and "place_call" in i["problem"]
+    assert api.dials() == 0

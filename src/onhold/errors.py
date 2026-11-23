@@ -2,7 +2,7 @@
 
 A refusal carries a ``code``, a one-line ``message`` and a list of ``issues``,
 all found in one pass, so the caller can fix everything in a single retry.
-Each issue names the ``field`` as a JSON path (``brief.call_window.start``),
+Each issue names the ``field`` as a JSON path (``brief.keypad_entries[0].value``),
 the ``problem``, and, where it is safe to show, what was ``expected`` and what
 was ``received``. Never put a value in ``received`` that the brief is refused
 for carrying (an SSN, a card number): say what it looked like instead.

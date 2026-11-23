@@ -46,7 +46,6 @@ PLACEHOLDERS = {
     "keypad_entries": "(none: key in or read out no account, ID or phone numbers)",
     "callback_number": "512-555-0100",
     "assistant_number": "512-555-0100",
-    "call_window": "none (call placed now)",
     "onhold_call_id": "c_example",
 }
 

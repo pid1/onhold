@@ -3,9 +3,6 @@
 Endpoints (checked 2026-11-05 against https://elevenlabs.io/docs/api-reference):
 
 * ``POST /v1/convai/twilio/outbound-call``          place a call now
-* ``POST /v1/convai/batch-calling/submit``          schedule a call (one recipient)
-* ``GET  /v1/convai/batch-calling/{id}``            scheduled call status
-* ``POST /v1/convai/batch-calling/{id}/cancel``     cancel a scheduled call
 * ``GET  /v1/convai/conversations/{id}``            status, transcript, analysis
 * agents and phone numbers, for ``scripts/setup.py``
 
@@ -93,49 +90,6 @@ class ElevenLabs:
                 },
             },
         )
-
-    async def submit_batch(
-        self,
-        *,
-        call_name: str,
-        agent_id: str,
-        phone_number_id: str,
-        to_number: str,
-        dynamic_variables: dict[str, str],
-        scheduled_time_unix: int,
-        timezone: str,
-        ringing_timeout_secs: int,
-    ) -> dict:
-        return await self.request(
-            "POST",
-            "/v1/convai/batch-calling/submit",
-            json={
-                "call_name": call_name,
-                "agent_id": agent_id,
-                "agent_phone_number_id": phone_number_id,
-                "scheduled_time_unix": scheduled_time_unix,
-                "timezone": timezone,
-                "target_concurrency_limit": 1,
-                "recipients": [
-                    {
-                        "phone_number": to_number,
-                        "conversation_initiation_client_data": {
-                            "dynamic_variables": dynamic_variables
-                        },
-                    }
-                ],
-                "telephony_call_config": {
-                    "ringing_timeout_secs": ringing_timeout_secs,
-                    "twilio_call_recording_enabled": False,
-                },
-            },
-        )
-
-    async def get_batch(self, batch_id: str) -> dict:
-        return await self.request("GET", f"/v1/convai/batch-calling/{safe_id(batch_id)}")
-
-    async def cancel_batch(self, batch_id: str) -> dict:
-        return await self.request("POST", f"/v1/convai/batch-calling/{safe_id(batch_id)}/cancel")
 
     async def get_conversation(self, conversation_id: str) -> dict:
         return await self.request("GET", f"/v1/convai/conversations/{safe_id(conversation_id)}")

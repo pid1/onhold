@@ -42,6 +42,11 @@ be used with batch calls**, and batch calls fail unless `language`,
 `first_message`, system prompt and `voice_id` are overridable on the agent.
 ([batch guide](https://elevenlabs.io/docs/eleven-agents/phone-numbers/batch-calls))
 
+onhold once scheduled calls this way (`schedule_call`, one recipient per
+batch). ElevenLabs refused onhold's batch submit with a 403, so it never worked
+in production, and scheduling was removed on 2026-11-23 (the owner's decision). onhold
+now only places calls at once, during calling hours.
+
 ## (d) Plan tier and pricing
 
 From [elevenlabs.io/pricing/agents](https://elevenlabs.io/pricing/agents):
@@ -93,8 +98,8 @@ The permission enum (SDK `types/permission_type.py`) includes `convai_read`,
 and more. The dashboard shows these as levels per product ("ElevenAgents:
 Write", "Voices: Read").
 
-* **Runtime (the Worker):** ElevenAgents **Write**. Placing calls and
-  submitting batches are writes. Write appears to include read: the existing
+* **Runtime (the Worker):** ElevenAgents **Write**. Placing calls is a
+  write. Write appears to include read: the existing
   key read agents, numbers, conversations, batches and tests.
 * **Setup:** ElevenAgents Write plus Voices Read (voice choice), and
   Pronunciation Dictionaries Write if you use pronunciation rules.
@@ -208,7 +213,9 @@ import also needs `account_auth_token` for inbound signature validation.
   (the agent ends the call, and `do_not_call_requested` is recorded).
   ([TCPA](https://elevenlabs.io/docs/eleven-agents/legal/tcpa))
   onhold's calls are informational calls the owner asked for, mostly to
-  businesses, but the hours rule is enforced for every call.
+  businesses, but the hours rule is enforced for every call: `callee_timezone`
+  is required, and `draft_call` and `place_call` refuse a call that would start
+  outside 8:00-20:00 there (the one-hour cap still ends it by 21:00).
 
 ## (j) Pronunciation dictionaries (checked 2026-11-05)
 

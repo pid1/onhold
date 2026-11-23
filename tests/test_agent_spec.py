@@ -9,7 +9,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from conftest import NOW, brief
+from conftest import brief
 
 from onhold import agent_spec, classes, report
 from onhold.brief import (
@@ -26,7 +26,7 @@ import setup  # noqa: E402
 
 
 def variables() -> dict[str, str]:
-    b = parse_brief(brief(), now=NOW)
+    b = parse_brief(brief())
     return to_dynamic_variables(b, "Test Owner", "+15125550100", "c_0123456789abcdef")
 
 
