@@ -149,9 +149,9 @@ claude mcp add --transport http onhold https://onhold.example.com/mcp
    six safety checks.
 4. Draft and approve a second call to your phone, and don't answer it. It must
    come back `not_reached` with the reason `no_answer` or `voicemail`.
-5. Check `no_sensitive_info_shared` on the first call. It is graded against the
-   brief's `may_share` list, which assumes ElevenLabs fills dynamic variables
-   into evaluation prompts. If it flags something that was on the list, the
+5. Check `shared_only_permitted_info` on the first call. It is graded against the
+   brief's `may_share` list and its call class, which assumes ElevenLabs fills
+   dynamic variables into evaluation prompts. If it flags something that was on the list, the
    assumption is wrong; `owner_facts_shared` still shows what was said.
 
 ## Optional: let the agent see when you're free, and hold a time
