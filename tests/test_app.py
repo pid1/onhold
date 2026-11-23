@@ -180,7 +180,17 @@ async def test_mcp_lists_the_tools_and_drafts_a_call(client, signing_key, api):
         "delete_call",
         "get_menu_paths",
         "delete_menu_paths",
+        "get_brief_guide",
     }
+    assert tools["get_brief_guide"]["annotations"]["readOnlyHint"] is True
+    assert "get_brief_guide first" in tools["draft_call"]["description"]
+    # draft_call takes the brief as an object but still advertises CallBrief's schema.
+    schema = tools["draft_call"]["inputSchema"]
+    assert schema["properties"]["brief"] == {"$ref": "#/$defs/CallBrief"}
+    call_brief = schema["$defs"]["CallBrief"]
+    assert {"to_number", "call_window", "may_share"} <= set(call_brief["properties"])
+    assert "E.164" in call_brief["properties"]["to_number"]["description"]
+    assert "CallWindow" in schema["$defs"]
     assert tools["get_menu_paths"]["annotations"]["readOnlyHint"] is True
     assert tools["delete_menu_paths"]["annotations"]["destructiveHint"] is True
     assert tools["place_call"]["annotations"]["destructiveHint"] is True
@@ -212,5 +222,8 @@ async def test_mcp_lists_the_tools_and_drafts_a_call(client, signing_key, api):
         ),
         headers=headers,
     )
-    assert r.json()["result"]["isError"] is True
+    result = r.json()["result"]
+    assert result["isError"] is True
+    error = json.loads(result["content"][0]["text"])
+    assert error["code"] == "refused" and error["request_id"]
     assert api.dials() == 0

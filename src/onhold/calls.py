@@ -32,18 +32,20 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from onhold import agent_spec, report
+from onhold import agent_spec, classes, report
 from onhold.brief import (
     BriefError,
     CallBrief,
     check_brief,
     check_call_hours,
     check_number,
+    class_warnings,
     parse_brief,
     to_dynamic_variables,
 )
 from onhold.config import Settings
 from onhold.elevenlabs import ElevenLabs, ElevenLabsError
+from onhold.errors import OnholdError, issue
 from onhold.notify import pushover
 from onhold.store import Store
 
@@ -66,7 +68,7 @@ OPEN = ("scheduled", "dialing", "in_progress")
 REACHED = ("goal_met", "partial", "needs_owner")
 
 
-class CallError(ValueError):
+class CallError(OnholdError):
     """A refusal to show the caller: the message says what to do instead."""
 
 
@@ -108,9 +110,15 @@ class Service:
             if isinstance(brief, CallBrief)
             else parse_brief(brief, now=self._now())
         )
-        check_number(b.to_number, self.settings.allowed_country_codes)
+        try:
+            check_number(b.to_number, self.settings.allowed_country_codes)
+        except BriefError as e:
+            raise BriefError(
+                f"brief.to_number: {e.message}", [issue("brief.to_number", e.message)]
+            ) from None
         if b.to_number in (self.settings.assistant_number,):
-            raise BriefError("to_number: the assistant cannot call its own number")
+            problem = "the assistant cannot call its own number"
+            raise BriefError(f"brief.to_number: {problem}", [issue("brief.to_number", problem)])
         return b
 
     def _variables(self, b: CallBrief, call_id: str) -> dict[str, str]:
@@ -128,6 +136,7 @@ class Service:
         draft_id = "d_" + secrets.token_hex(8)
         call_id = "c_" + secrets.token_hex(8)
         variables = self._variables(b, call_id)
+        warnings = class_warnings(b)
         if b.call_window:
             dial = b.call_window.dial_time(now)
             when = {
@@ -145,6 +154,9 @@ class Service:
             "callee_name": b.callee_name,
             "to_number": b.to_number,
             "reference": b.reference,
+            "call_class": b.call_class,
+            "class_may_share": classes.shareable(b.call_class),
+            "allow_charge_on_file": b.allow_charge_on_file,
             **when,
             "first_message": agent_spec.render(agent_spec.first_message(), variables),
             "first_message_when": (
@@ -154,6 +166,8 @@ class Service:
             "voicemail_message": agent_spec.render(agent_spec.voicemail_message(), variables),
             "dynamic_variables": variables,
         }
+        if warnings:
+            preview["warnings"] = warnings
         expires = now + timedelta(seconds=self.settings.draft_ttl_secs)
         await self.store.insert_draft(
             {
@@ -164,16 +178,28 @@ class Service:
                 "preview_json": preview,
             }
         )
+        heed = ""
+        if warnings:
+            heed = (
+                f" Point out the {len(warnings)} warning(s) under preview.warnings: may_share "
+                f"items a {b.call_class} call does not share. If the owner wants them shared, "
+                "draft again with a call_class that allows them, or remove them."
+            )
         result = {
             "draft_id": draft_id,
             "expires_at_utc": expires.isoformat(timespec="minutes"),
+            "call_class": b.call_class,
+            "class_may_share": classes.shareable(b.call_class),
+            "allow_charge_on_file": b.allow_charge_on_file,
             "preview": preview,
             "next": (
-                f"Show the owner this whole preview and ask whether to go ahead. Only on a "
-                f"clear yes, call {when['use']}(draft_id, confirm=true). The draft works once "
+                f"Show the owner this whole preview and ask whether to go ahead.{heed} Only on "
+                f"a clear yes, call {when['use']}(draft_id, confirm=true). The draft works once "
                 f"and expires in {self.settings.draft_ttl_secs // 60} minutes."
             ),
         }
+        if warnings:
+            result["warnings"] = warnings
         if not b.menu_path:
             saved = [r for r in await self.store.menu_paths(b.to_number) if _works(r)]
             if saved:
@@ -603,11 +629,22 @@ def view(call: dict, include_transcript: bool = False) -> dict:
         "started_at_local": _iso(call["started_at"], tz),
         "duration_secs": call["duration_secs"],
         "cost_credits": call["cost"],
-        "evaluation": call.get("evaluation_json") or {},
     }
-    failed = [k for k, v in out["evaluation"].items() if v == "failure"]
+    evaluation, aliases = report.with_aliases(call.get("evaluation_json") or {})
+    out["evaluation"] = evaluation
+    if aliases:
+        out["deprecated_aliases"] = aliases
+    if call["status"] == "ended" or evaluation:
+        out["evaluation_details"] = report.evaluation_details(call)
+    attention = []
+    failed = [k for k, v in evaluation.items() if v == "failure" and k not in aliases]
     if failed:
-        out["attention"] = f"Safety check failed: {', '.join(failed)}. Read the transcript."
+        attention.append(f"Safety check failed: {', '.join(failed)}. Read the transcript.")
+    charge = out.get("evaluation_details", {}).get("charge_on_file") or {}
+    if charge.get("recorded") and not charge["allowed"]:
+        attention.append("A charge on file was agreed, but this call did not allow one.")
+    if attention:
+        out["attention"] = " ".join(attention)
     if call["status"] in OPEN:
         out["retry_after_seconds"] = RETRY_AFTER_SECS
         out["next"] = "Still going. Check again after retry_after_seconds."

@@ -493,3 +493,32 @@ async def test_delete_needs_confirm_and_a_finished_call(service, api, store):
         await service.delete_call(call_id, False)
     assert (await service.delete_call(call_id, True))["deleted"]
     assert await store.get_call(call_id) is None
+
+
+async def test_get_call_reports_the_evaluation_and_the_old_criterion_id(service, api):
+    call_id = await placed(service, api)
+    conv = conversation(call_id)
+    conv["analysis"]["data_collection_results"]["shared_items"] = {"value": "date of birth"}
+    conv["analysis"]["evaluation_criteria_results"] = {
+        "disclosed_ai": {"result": "success"},
+        "shared_only_permitted_info": {"result": "failure"},
+    }
+    await service.ingest_webhook({"type": "post_call_transcription", "data": conv})
+    v = await service.get_call(call_id)
+    assert v["evaluation"]["no_sensitive_info_shared"] == "failure"
+    assert "no_sensitive_info_shared" in v["deprecated_aliases"]
+    assert v["attention"].count("Safety check failed") == 1
+    assert "no_sensitive_info_shared" not in v["attention"]
+    # This brief has no call_class: it is judged as customer_support.
+    assert v["evaluation_details"] == {
+        "call_class": "customer_support",
+        "class_may_share": [
+            "name",
+            "callback number",
+            "address",
+            "customer account number",
+            "order number",
+        ],
+        "shared_items": ["date of birth"],
+        "shared_other": False,
+    }

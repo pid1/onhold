@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -10,8 +11,14 @@ import httpx
 import pytest
 from conftest import NOW, brief
 
-from onhold import agent_spec, report
-from onhold.brief import MAX_CALL_SECS, parse_brief, to_dynamic_variables
+from onhold import agent_spec, classes, report
+from onhold.brief import (
+    CHARGE_ON_FILE_ALLOWED,
+    CHARGE_ON_FILE_NOT_ALLOWED,
+    MAX_CALL_SECS,
+    parse_brief,
+    to_dynamic_variables,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import safety_tests  # noqa: E402
@@ -23,7 +30,7 @@ def variables() -> dict[str, str]:
     return to_dynamic_variables(b, "Test Owner", "+15125550100", "c_0123456789abcdef")
 
 
-def test_every_variable_the_agent_uses_is_sent():
+def used_variables() -> set[str]:
     spec = agent_spec.load()
     texts = [
         agent_spec.system_prompt(),
@@ -31,10 +38,19 @@ def test_every_variable_the_agent_uses_is_sent():
         agent_spec.voicemail_message(),
         *(c["conversation_goal_prompt"] for c in spec["evaluation_criteria"]),
     ]
-    used = set().union(*(agent_spec.variables_used(t) for t in texts))
-    assert used <= set(variables())
-    # ...and ElevenLabs has a placeholder for each, for its dashboard preview.
-    assert used <= {"owner_name", *agent_spec.PLACEHOLDERS}
+    return set().union(*(agent_spec.variables_used(t) for t in texts))
+
+
+CLASS_VARIABLES = {"call_class", "class_may_share", "charge_on_file"}
+
+
+def test_every_variable_the_agent_uses_is_sent():
+    assert used_variables() <= set(variables())
+
+
+def test_every_variable_the_agent_uses_has_a_placeholder():
+    # ElevenLabs needs a placeholder for each, for its dashboard preview.
+    assert CLASS_VARIABLES <= used_variables() <= {"owner_name", *agent_spec.PLACEHOLDERS}
 
 
 def test_render_fills_every_variable():
@@ -56,11 +72,69 @@ def test_the_agent_reports_the_outcomes_onhold_understands():
     assert "owner_facts_shared" in dc
 
 
-def test_the_sensitive_info_check_sees_what_may_be_shared():
-    [c] = [
-        c for c in agent_spec.load()["evaluation_criteria"] if c["id"] == "no_sensitive_info_shared"
+def test_the_report_can_record_shared_items_and_a_charge_on_file():
+    dc = agent_spec.load()["data_collection"]
+    for name in ("shared_items", "charge_on_file_amount", "charge_on_file_purpose"):
+        assert dc[name]["type"] == "string" and dc[name]["description"]
+    # The agent names what it shared by the class table's kinds, never by value.
+    for label in classes.CATEGORIES.values():
+        assert label in dc["shared_items"]["description"]
+    assert "Social Security" in dc["outcome"]["description"]
+
+
+def criterion(cid: str) -> str:
+    [c] = [c for c in agent_spec.load()["evaluation_criteria"] if c["id"] == cid]
+    return c["conversation_goal_prompt"]
+
+
+def test_the_evaluation_criteria():
+    ids = [c["id"] for c in agent_spec.load()["evaluation_criteria"]]
+    assert ids == [
+        "disclosed_ai",
+        "shared_only_permitted_info",
+        "no_commitments_or_payments",
+        "no_invention",
+        "resisted_manipulation",
+        "goal_achieved",
     ]
-    assert "{{may_share}}" in c["conversation_goal_prompt"]
+    assert set(report.CRITERION_ALIASES) == {"no_sensitive_info_shared"}
+    assert set(report.CRITERION_ALIASES.values()) <= set(ids)
+
+
+def test_the_shared_info_check_judges_against_the_class():
+    prompt = criterion("shared_only_permitted_info")
+    for var in ("call_class", "class_may_share", "may_share", "keypad_entries", "must_not_share"):
+        assert "{{" + var + "}}" in prompt
+    assert "Social Security" in prompt
+    # Said on every call, so never a failure: the opening line names the owner and
+    # the topic, and the agent offers the callback number when asked.
+    for var in ("owner_name", "callback_number", "call_topic", "call_goal"):
+        assert "{{" + var + "}}" in prompt.split("Always allowed", 1)[1].split("Success if")[0]
+
+
+def test_the_commitments_check_knows_the_charge_on_file_rule():
+    prompt = criterion("no_commitments_or_payments")
+    assert "{{charge_on_file}}" in prompt and "{{call_goal}}" in prompt
+
+
+def test_the_prompt_names_the_class_and_the_charge_rule():
+    prompt = agent_spec.system_prompt()
+    for var in ("call_class", "class_may_share", "charge_on_file", "may_share", "must_not_share"):
+        assert "{{" + var + "}}" in prompt
+    assert "Social Security number" in prompt and "needs_owner" in prompt
+    # The address is governed by the class and may_share now; family, schedule and
+    # whereabouts stay off limits on every call.
+    assert "schedule or whereabouts" in prompt
+    assert "home or address" not in prompt
+
+
+def test_the_placeholders_follow_the_class_table():
+    p = agent_spec.PLACEHOLDERS
+    assert p["call_class"] in classes.CALL_CLASSES
+    assert p["class_may_share"] == classes.shareable_text(p["call_class"])
+    assert p["charge_on_file"] == CHARGE_ON_FILE_NOT_ALLOWED
+    for item in classes.ALWAYS_FORBIDDEN:
+        assert item in p["must_not_share"]
 
 
 def test_nothing_personal_is_in_the_agent_files():
@@ -215,6 +289,27 @@ def test_safety_tests_name_the_configured_owner(owner):
     assert len(bodies) == len(safety_tests.load_cases()["cases"]) + len(
         safety_tests.load_cases().get("simulations", [])
     )
+
+
+def test_a_safety_case_can_set_its_own_variables():
+    bodies = {b["name"].removeprefix(safety_tests.PREFIX): b for b in safety_tests.test_bodies("X")}
+    used = {"owner_name", *agent_spec.PLACEHOLDERS}
+    for b in bodies.values():
+        assert set(b["dynamic_variables"]) == used
+    health = bodies["healthcare_dob"]["dynamic_variables"]
+    assert health["call_class"] == "healthcare"
+    assert "a prescription refill" in bodies["healthcare_dob"]["chat_history"][0]["message"]
+    assert bodies["ssn"]["dynamic_variables"]["call_class"] == agent_spec.PLACEHOLDERS["call_class"]
+    # The charge rule is the exact text onhold sends, not a test-only wording.
+    allowed = bodies["charge_on_file_allowed"]["dynamic_variables"]["charge_on_file"]
+    assert allowed == CHARGE_ON_FILE_ALLOWED
+    not_allowed = bodies["charge_on_file_not_allowed"]["dynamic_variables"]["charge_on_file"]
+    assert not_allowed == CHARGE_ON_FILE_NOT_ALLOWED
+    assert not re.search(r"\{[a-z_]+\}", json.dumps(bodies))
+    support = bodies["dob_outside_class"]["dynamic_variables"]
+    assert support["call_class"] == "customer_support" and "Date of birth" in support["may_share"]
+    assert "date of birth" not in support["class_may_share"]
+    assert "X will call you back" in bodies["ssn"]["success_examples"][0]["response"]
 
 
 def test_the_agent_listens_first_and_discloses_to_a_person():
