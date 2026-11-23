@@ -16,10 +16,21 @@ one party that cannot see whether it was talking to a person:
   is a hang-up, not a conversation: not reached;
 * a brief whose questions all went unanswered did not meet its goal.
 
+Answers come from the ``qa`` data collection: every question the agent asked
+and what the other person said, one ``Q: ... || A: ...`` pair per line. The
+analyzer sees only the transcript, never the brief, so each pair is matched to
+the brief's questions here (``match_answers``). Older conversations carry
+``answer_1``...``answer_10``, which are still read when present.
+
 When the outcome is corrected away from ``goal_met``, a ``goal_achieved``
 evaluation of ``success`` is corrected with it, the way that criterion reads.
 
 Every adjustment is recorded in ``details.checks`` so the report says why.
+
+ElevenLabs' post-call analysis does not substitute the brief's dynamic
+variables, so it cannot know the call's class or may_share. ``apply_brief_rules``
+judges ``shared_only_permitted_info`` and the charge-on-file rule from the
+stored brief instead (see its docstring).
 """
 
 from __future__ import annotations
@@ -30,6 +41,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from onhold import classes
+from onhold.brief import item_categories
 
 OUTCOMES = ("goal_met", "partial", "needs_owner", "not_reached")
 REASONS = (
@@ -66,6 +78,34 @@ OPTION_DIGITS = re.compile(r"(?:\d[ -]?){5,}")
 # carry the old id too, with the new one's result, for one release.
 CRITERION_ALIASES = {"no_sensitive_info_shared": "shared_only_permitted_info"}
 MAX_SHARED_ITEMS = 20
+MAX_OTHER_QUESTIONS = 20
+PERMITTED = "shared_only_permitted_info"
+COMMITMENTS = "no_commitments_or_payments"
+# Said on every call, whatever the brief: the opening line names the owner, and
+# the agent offers the callback number when asked.
+ALWAYS_SHAREABLE = ("name", "callback_number")
+# One ``qa`` line: 'Q: <question> || A: <answer>', with any bullet or number before it.
+QA_LINE = re.compile(
+    r"^\s*(?:[-*\u2022]|\d+[.)])?\s*Q\s*[:.]\s*(?P<q>.*?)\s*\|\|\s*A\s*[:.]\s*(?P<a>.*?)\s*$",
+    re.IGNORECASE,
+)
+# A question the agent asked matches a brief question when it has at least this
+# share of the brief question's content words (see ``similarity``).
+MATCH_THRESHOLD = 0.6
+# Fewest content words two questions must share to match at all.
+MIN_SHARED = 2
+# A shorter word this long or longer matches a longer one it starts ("refill",
+# "refills"; "pick", "pickup").
+PREFIX_MIN = 4
+STOPWORDS = frozenset(
+    """a about after again all also am an and any anything are as ask at be been before
+    being but by can could did do does doing for from get got had has have having he her
+    here him his how i if in into is it its just know let like may me might more most much
+    my need no not now of off on once one only or other our out over please really she
+    should so some still such tell than thank thanks that the their them then there these
+    they this those to too up us very was way we were what whats when where whether which
+    while who whom why will with would yes you your yours""".split()
+)
 # The opening line's AI disclosure (agent/first_message.txt), which marks the
 # agent's first words to a person.
 DISCLOSURE = re.compile(r"\bAI\b")
@@ -132,12 +172,9 @@ def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) 
     heard_them = any(t["role"] == "them" for t in transcript)
     reported = outcome
 
-    answers = []
-    for i, q in enumerate(questions[:MAX_QUESTIONS], 1):
-        value = data.get(f"answer_{i}")
-        text = str(value).strip() if value is not None else ""
-        answered = text.lower() not in NOT_ANSWERED
-        answers.append({"question": q, "answered": answered, "answer": text if answered else None})
+    answers, other_questions = match_answers(
+        questions[:MAX_QUESTIONS], parse_qa(data.get("qa")), data
+    )
     any_answered = any(a["answered"] for a in answers)
     shared = _lines(data.get("owner_facts_shared"))
 
@@ -197,6 +234,8 @@ def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) 
     shared_items = [i for i in _lines(data.get("shared_items")) if i.lower() not in NOT_ANSWERED]
     if shared_items:
         details["shared_items"] = shared_items[:MAX_SHARED_ITEMS]
+    if other_questions:
+        details["other_questions"] = other_questions[:MAX_OTHER_QUESTIONS]
     charge = {k: str(data.get(f"charge_on_file_{k}") or "").strip() for k in ("amount", "purpose")}
     if any(v.lower() not in NOT_ANSWERED for v in charge.values()):
         details["charge_on_file"] = {
@@ -223,6 +262,113 @@ def from_conversation(conv: dict, questions: list[str], max_duration_secs: int) 
         "cost": meta.get("cost"),
         "transcript_json": transcript,
     }
+
+
+def _answer(value: Any) -> str | None:
+    """The answer text, or None when it says nothing was answered."""
+    text = str(value).strip() if value is not None else ""
+    return None if text.rstrip(".").strip().lower() in NOT_ANSWERED else text
+
+
+def parse_qa(value: Any) -> list[dict]:
+    """The ``qa`` data collection as ``[{"question", "answer"}]``, in the order asked.
+
+    One pair per line, ``Q: <question> || A: <answer>``. ``answer`` is None when
+    the line says it was not answered. Lines in any other shape are skipped.
+    """
+    out = []
+    for line in str(value or "").splitlines():
+        m = QA_LINE.match(line)
+        if m and m.group("q"):
+            out.append({"question": m.group("q"), "answer": _answer(m.group("a"))})
+    return out
+
+
+def _content_words(text: str) -> list[str]:
+    words = re.findall(r"[a-z0-9]+", re.sub(r"[-'\u2019]", "", text.lower()))
+    return list(dict.fromkeys(w for w in words if w not in STOPWORDS))
+
+
+def _word_match(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    short, long = sorted((a, b), key=len)
+    return len(short) >= PREFIX_MIN and long.startswith(short)
+
+
+def _found(words: list[str], other: list[str]) -> int:
+    return sum(any(_word_match(x, y) for y in other) for x in words)
+
+
+def similarity(question: str, asked: str) -> float:
+    """How well the agent's question matches a brief question, 0 to 1.
+
+    Both are lowercased and stripped of stopwords. Two words match when they
+    are the same, or one starts with the other and the shorter has at least
+    ``PREFIX_MIN`` letters ("renew" and "renewed"). The score is the larger of
+    two shares: the brief question's words the asked one has (the agent added
+    the owner's name), and the asked question's words the brief one has (the
+    agent left out names, a dose or a place). Below ``MIN_SHARED`` shared
+    words the score is 0, so one common word ("refill") never makes a match.
+    """
+    wq, wa = _content_words(question), _content_words(asked)
+    if not wq or not wa:
+        # Only stopwords ("Who is it?"): the same words or nothing.
+        same = re.findall(r"[a-z0-9]+", question.lower()) == re.findall(r"[a-z0-9]+", asked.lower())
+        return 1.0 if same else 0.0
+    found_q, found_a = _found(wq, wa), _found(wa, wq)
+    if min(found_q, found_a) < min(MIN_SHARED, len(wq), len(wa)):
+        return 0.0
+    return max(found_q / len(wq), found_a / len(wa))
+
+
+def _dice(a: str, b: str) -> float:
+    """Shared content words over all of them, both ways: breaks ties in coverage."""
+    wa, wb = _content_words(a), _content_words(b)
+    if not wa or not wb:
+        return 0.0
+    return (_found(wa, wb) + _found(wb, wa)) / (len(wa) + len(wb))
+
+
+def match_answers(
+    questions: list[str], pairs: list[dict], data: dict | None = None
+) -> tuple[list[dict], list[dict]]:
+    """Each brief question's answer, and the asked pairs that match no question.
+
+    A pair matches a question when ``similarity`` is at least ``MATCH_THRESHOLD``.
+    Matching is one to one, answered pairs first, then by score (ties by the
+    Dice score over both questions' content words), then in order:
+    a question asked twice gets the try that was answered, and the other try is
+    left over. An old conversation's
+    ``answer_N`` (from ``data``), when present and non-empty, is used for
+    question N unless it says not answered and a matched pair has an answer.
+    """
+    data = data or {}
+    scored = sorted(
+        (p["answer"] is None, -score, -_dice(q, p["question"]), qi, pi)
+        for qi, q in enumerate(questions)
+        for pi, p in enumerate(pairs)
+        if (score := similarity(q, p["question"])) >= MATCH_THRESHOLD
+    )
+    matched: dict[int, int] = {}
+    used: set[int] = set()
+    for *_, qi, pi in scored:
+        if qi not in matched and pi not in used:
+            matched[qi] = pi
+            used.add(pi)
+    answers = []
+    for qi, q in enumerate(questions):
+        legacy = data.get(f"answer_{qi + 1}")
+        text = _answer(legacy)
+        if text is None and qi in matched:
+            text = pairs[matched[qi]]["answer"]
+        answers.append({"question": q, "answered": text is not None, "answer": text})
+    other = [
+        {"question": p["question"], "answer": p["answer"]}
+        for pi, p in enumerate(pairs)
+        if pi not in used
+    ]
+    return answers, other
 
 
 def _option(reason: Any) -> str:
@@ -272,13 +418,117 @@ def menu_presses(conv: dict, entries: Iterable[str] = ()) -> list[dict] | None:
     return steps
 
 
-def shared_kind(item: str) -> str:
-    """The class-table name for one shared item ('date of birth'), else 'other'."""
+def shared_category(item: str) -> str | None:
+    """The class-table id for one shared item ('date_of_birth'), else None."""
     text = " ".join(item.lower().replace("_", " ").split())
     for cid, label in classes.CATEGORIES.items():
         if text in (label.lower(), cid.replace("_", " ")) or text.startswith(f"{label.lower()}:"):
-            return label
-    return "other"
+            return cid
+    return None
+
+
+def shared_kind(item: str) -> str:
+    """The class-table name for one shared item ('date of birth'), else 'other'."""
+    cid = shared_category(item)
+    return classes.CATEGORIES[cid] if cid else "other"
+
+
+# Stricter first. A missing result is as good as unknown.
+_SEVERITY = {"failure": 2, "unknown": 1, None: 1, "success": 0}
+
+
+def permitted_categories(b: dict) -> set[str]:
+    """The categories a call may share: its class, narrowed to what the brief carries.
+
+    Name and callback number always; otherwise a category the class allows that
+    a may_share item, a keypad entry's label, the topic or the goal looks like
+    (``brief.item_categories``). An old brief without a class is customer_support.
+    """
+    call_class = b.get("call_class") or classes.DEFAULT_CLASS
+    in_class = set(classes.CLASS_CATEGORIES.get(call_class, ()))
+    texts = [
+        *(b.get("may_share") or []),
+        *(str((e or {}).get("label") or "") for e in b.get("keypad_entries") or []),
+        str(b.get("topic") or ""),
+        str(b.get("goal") or ""),
+    ]
+    named = {c for t in texts for c in item_categories(t)}
+    return set(ALWAYS_SHAREABLE) | (named & in_class)
+
+
+def apply_brief_rules(fields: dict, b: dict) -> dict:
+    """Judge the class and charge rules from the stored brief ``b``; returns ``fields``.
+
+    ElevenLabs' evaluation cannot see the brief (it does not substitute dynamic
+    variables), so onhold decides ``shared_only_permitted_info`` from the
+    report's ``shared_items``:
+
+    * a shared category the class does not allow, or that nothing in the brief
+      carries (``permitted_categories``), is a failure;
+    * when every item maps to the class table and all are permitted, success;
+    * when anything shared is 'other' (unmapped), the stricter of onhold's
+      result and ElevenLabs';
+    * with nothing recorded as shared, ElevenLabs' result stands.
+
+    A charge on file recorded when the brief did not allow one fails
+    ``no_commitments_or_payments``; otherwise ElevenLabs' result stands. Each
+    change is noted in ``details.checks``. The deprecated id, if the conversation
+    carried it, is replaced by the new one, so ``with_aliases`` mirrors the final
+    result.
+    """
+    evaluation = dict(fields.get("evaluation_json") or {})
+    details = dict(fields.get("details_json") or {})
+    notes: list[str] = []
+    old_ids = [old for old, new in CRITERION_ALIASES.items() if new == PERMITTED]
+
+    items = details.get("shared_items") or []
+    if items:
+        call_class = b.get("call_class") or classes.DEFAULT_CLASS
+        in_class = set(classes.CLASS_CATEGORIES.get(call_class, ()))
+        allowed = permitted_categories(b)
+        cats = [shared_category(i) for i in items]
+        problems = []
+        for c in dict.fromkeys(c for c in cats if c and c not in allowed):
+            why = (
+                f"which a {call_class} call does not share"
+                if c not in in_class
+                else "which the brief's may_share did not include"
+            )
+            problems.append(f"a {classes.CATEGORIES[c]} was shared, {why}")
+        ours = "failure" if problems else "success"
+        theirs = evaluation.get(PERMITTED)
+        if theirs is None:
+            theirs = next((evaluation[o] for o in old_ids if o in evaluation), None)
+        final = ours
+        if None in cats and _SEVERITY.get(theirs, 1) > _SEVERITY[ours]:
+            final = theirs if theirs is not None else "unknown"
+        if final != theirs:
+            if problems:
+                why = "; ".join(problems)
+            elif None in cats:
+                why = "something shared is not in the class table, so it stays unconfirmed"
+            else:
+                why = f"everything shared is permitted on this {call_class} call"
+            notes.append(
+                f"The {PERMITTED} evaluation said {theirs or 'nothing'}; onhold's check of the"
+                f" class and may_share: {why}. Marked {final}."
+            )
+        evaluation[PERMITTED] = final
+        # An older agent's id goes; ``with_aliases`` returns it with the final result.
+        for old in old_ids:
+            evaluation.pop(old, None)
+
+    if details.get("charge_on_file") and not b.get("allow_charge_on_file", False):
+        if evaluation.get(COMMITMENTS) != "failure":
+            notes.append(
+                f"The {COMMITMENTS} evaluation said {evaluation.get(COMMITMENTS) or 'nothing'};"
+                " a charge on file was agreed, but this call did not allow one. Marked failure."
+            )
+        evaluation[COMMITMENTS] = "failure"
+
+    if notes:
+        details["checks"] = [*(details.get("checks") or []), *notes]
+    return fields | {"evaluation_json": evaluation, "details_json": details}
 
 
 def evaluation_details(call: dict) -> dict:

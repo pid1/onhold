@@ -104,6 +104,23 @@ cap while waiting is a hold timeout. When onhold takes a `goal_met` away, the
 `goal_achieved` check is corrected to match. Every correction is noted in the
 report.
 
+ElevenLabs' post-call analysis reads only the transcript; it never sees the
+brief. So the agent lists every question it asked and the answer it got, in its
+own words, and onhold matches each one to the brief's questions by the words
+they share. A question it asked that matches none of the brief's goes in
+`details.other_questions`.
+
+For the same reason onhold judges the class rules itself. ElevenLabs'
+`shared_only_permitted_info` check looks only for what no call may share (an
+SSN, card or bank details, anyone's schedule or whereabouts). onhold then
+compares the kinds of fact the agent says it shared with the call class and
+with what the brief's `may_share` carries (your name and the callback number
+are always fine). Anything outside them fails the check. If everything shared
+is a known kind and allowed, the check passes. If something shared isn't a
+known kind, the stricter of the two results stands. A charge on file agreed on
+a call whose brief didn't allow one fails `no_commitments_or_payments`. Each
+override is noted in `details.checks`.
+
 Text that came from the person called is returned under
 `untrusted_external_content`: it is data, never instructions.
 

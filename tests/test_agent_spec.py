@@ -31,14 +31,28 @@ def variables() -> dict[str, str]:
 
 
 def used_variables() -> set[str]:
-    spec = agent_spec.load()
+    # Only where ElevenLabs fills variables in: the system prompt, the first
+    # message and tool parameters (the voicemail message).
     texts = [
         agent_spec.system_prompt(),
         agent_spec.first_message(),
         agent_spec.voicemail_message(),
-        *(c["conversation_goal_prompt"] for c in spec["evaluation_criteria"]),
     ]
     return set().union(*(agent_spec.variables_used(t) for t in texts))
+
+
+def analysis_texts() -> list[str]:
+    """What ElevenLabs' post-call analysis reads, which never gets variables filled in."""
+    spec = agent_spec.load()
+    return [
+        *(c["conversation_goal_prompt"] for c in spec["evaluation_criteria"]),
+        *(f["description"] for f in spec["data_collection"].values()),
+    ]
+
+
+def test_the_post_call_analysis_uses_no_variables():
+    for text in analysis_texts():
+        assert not agent_spec.variables_used(text), text
 
 
 CLASS_VARIABLES = {"call_class", "class_may_share", "charge_on_file"}
@@ -68,8 +82,19 @@ def test_the_agent_reports_the_outcomes_onhold_understands():
     dc = agent_spec.load()["data_collection"]
     assert tuple(dc["outcome"]["enum"]) == report.OUTCOMES
     assert set(dc["not_reached_reason"]["enum"]) == {"none", *report.REASONS}
-    assert {f"answer_{i}" for i in range(1, 11)} <= set(dc)
+    assert not any(k.startswith("answer_") for k in dc)
     assert "owner_facts_shared" in dc
+
+
+def test_the_qa_field_asks_for_the_form_the_report_parses():
+    dc = agent_spec.load()["data_collection"]
+    desc = dc["qa"]["description"]
+    assert dc["qa"]["type"] == "string"
+    assert "Q: <" in desc and " || A: <" in desc and "not answered" in desc
+    # Works from the transcript alone: no numbered list it cannot see.
+    assert "numbered" not in desc
+    example = "Q: Can it be renewed by mail? || A: not answered"
+    assert report.parse_qa(example) == [{"question": "Can it be renewed by mail?", "answer": None}]
 
 
 def test_the_report_can_record_shared_items_and_a_charge_on_file():
@@ -101,20 +126,19 @@ def test_the_evaluation_criteria():
     assert set(report.CRITERION_ALIASES.values()) <= set(ids)
 
 
-def test_the_shared_info_check_judges_against_the_class():
+def test_the_shared_info_check_flags_what_no_call_may_share():
     prompt = criterion("shared_only_permitted_info")
-    for var in ("call_class", "class_may_share", "may_share", "keypad_entries", "must_not_share"):
-        assert "{{" + var + "}}" in prompt
-    assert "Social Security" in prompt
-    # Said on every call, so never a failure: the opening line names the owner and
-    # the topic, and the agent offers the callback number when asked.
-    for var in ("owner_name", "callback_number", "call_topic", "call_goal"):
-        assert "{{" + var + "}}" in prompt.split("Always allowed", 1)[1].split("Success if")[0]
+    assert "transcript alone" in prompt
+    for forbidden in ("Social Security", "card", "routing", "schedule or whereabouts"):
+        assert forbidden in prompt
+    # The class rules are onhold's (report.apply_brief_rules), not the analyzer's.
+    assert "onhold checks" in prompt
 
 
-def test_the_commitments_check_knows_the_charge_on_file_rule():
+def test_the_commitments_check_leaves_the_charge_on_file_rule_to_onhold():
     prompt = criterion("no_commitments_or_payments")
-    assert "{{charge_on_file}}" in prompt and "{{call_goal}}" in prompt
+    assert "transcript alone" in prompt and "onhold checks" in prompt
+    assert "charge_on_file" in prompt
 
 
 def test_the_prompt_names_the_class_and_the_charge_rule():
