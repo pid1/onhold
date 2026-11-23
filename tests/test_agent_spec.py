@@ -34,6 +34,9 @@ def used_variables() -> set[str]:
     return set().union(*(agent_spec.variables_used(t) for t in texts))
 
 
+CLASS_VARIABLES = {"call_class", "class_may_share", "charge_on_file"}
+
+
 def test_every_variable_the_agent_uses_is_sent():
     assert used_variables() <= set(variables())
 
