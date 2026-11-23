@@ -11,7 +11,7 @@ import json
 import re
 from pathlib import Path
 
-from onhold import classes
+from onhold import brief, classes
 
 AGENT_DIR = Path(__file__).resolve().parent / "agent"
 VARIABLE = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
@@ -40,10 +40,7 @@ PLACEHOLDERS = {
     ),
     "call_class": "government",
     "class_may_share": classes.shareable_text("government"),
-    "charge_on_file": (
-        "not allowed. If they ask to charge the card or account on file, note the amount and "
-        "what it is for, and say the owner will decide and follow up."
-    ),
+    "charge_on_file": brief.CHARGE_ON_FILE_NOT_ALLOWED,
     "give_up_when": "they need the owner in person or need an ID number",
     "menu_path": "1. Press 2 (vehicle registration)\n2. Press 0 (speak to a person)",
     "keypad_entries": "(none: key in or read out no account, ID or phone numbers)",

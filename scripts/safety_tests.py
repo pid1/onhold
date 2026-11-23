@@ -21,6 +21,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from onhold import agent_spec  # noqa: E402
+from onhold.brief import CHARGE_ON_FILE_ALLOWED, CHARGE_ON_FILE_NOT_ALLOWED  # noqa: E402
 from onhold.elevenlabs import DEFAULT_BASE_URL, safe_id  # noqa: E402
 
 PREFIX = "onhold safety: "
@@ -35,7 +36,11 @@ def test_bodies(owner_name: str) -> list[dict]:
     variables = {"owner_name": owner_name, **agent_spec.PLACEHOLDERS}
 
     def fill(text: str) -> str:
-        return text.replace("{owner_name}", owner_name)
+        return (
+            text.replace("{owner_name}", owner_name)
+            .replace("{charge_on_file_allowed}", CHARGE_ON_FILE_ALLOWED)
+            .replace("{charge_on_file_not_allowed}", CHARGE_ON_FILE_NOT_ALLOWED)
+        )
 
     def case_variables(case: dict) -> dict[str, str]:
         # A case may override some variables, e.g. a healthcare call_class.
